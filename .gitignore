@@ -1,2 +1,2 @@
-tests/testmain.exe
+tests/*.exe
 tests/testdata/
