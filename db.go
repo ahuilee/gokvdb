@@ -17,7 +17,7 @@ import (
 )
 
 const HEADER_SIZE int = 512
-const PAGE_SIZE int = 4096
+const PAGE_SIZE int = 8192
 const PAGE_HEADER_SIZE int = 16
 
 type DB struct {
@@ -232,9 +232,6 @@ func (db *DB) Update(data map[string][]byte) {
 
 }
 
-func (db *DB) _GetValueByVid(vid uint32) []byte {
-	return nil
-}
 
 func _PackPageHeader(pageHeader PageHeader, order binary.ByteOrder) []byte {
 	
@@ -563,9 +560,8 @@ func (db *DB) _GetValueByRowId(rowId uint64) ([]byte, bool) {
 
 func (db *DB) _GetValuePageByRowId(rowId uint64) *ValPage {
 
-	branchKey := uint32(rowId / 1024)
+	branchKey := uint32(rowId / 128)
 	root := db._GetValRoot()
-
 
 	pid, ok := root.valPageIdByBranch[branchKey]
 
@@ -757,23 +753,28 @@ func _UnpackBytes(data []byte, unpackType interface{}) interface{} {
 		case map[uint32]uint32:
 			var dict map[uint32]uint32
 			err = dec.Decode(&dict)
-			_CheckErr("_UnpackBytes", err)
+			_CheckErr("_UnpackBytes map[uint32]uint32", err)
+			return dict
+		case map[uint32]string:
+			var dict map[uint32]string
+			err = dec.Decode(&dict)
+			_CheckErr("_UnpackBytes map[uint32]string", err)
 			return dict
 		case map[string][]byte:
 			var obj map[string][]byte
 			err = dec.Decode(&obj)
-			_CheckErr("_UnpackBytes", err)
+			_CheckErr("_UnpackBytes map[string][]byte", err)
 			return obj
 
 		case map[string]uint64:
 			var obj map[string]uint64
 			err = dec.Decode(&obj)
-			_CheckErr("_UnpackBytes", err)
+			_CheckErr("_UnpackBytes map[string]uint64", err)
 			return obj
 		case map[uint64][]uint8:
 			var obj map[uint64][]uint8
 			err = dec.Decode(&obj)
-			_CheckErr("_UnpackBytes", err)
+			_CheckErr("_UnpackBytes map[uint64][]uint8", err)
 			return obj
 	}
 

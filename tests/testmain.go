@@ -20,7 +20,7 @@ func main() {
 
 	testName := args[0]
 
-	dbpath := "./testdata/test.db"
+	dbpath := "./testdata/test.kv"
 
 	switch strings.ToUpper(testName) {
 	case "INSERT":
@@ -63,24 +63,62 @@ func _TestItems(dbpath string, isPrint bool) {
 
 }
 
-func _TestInsert(dbpath string, count int) {
+func _Open(dbpath string, callback func(db *gokvdb.DB)) {
 	db := gokvdb.OpenHash(dbpath)
-	for i:=0; i<count; i++ {
-
-		key := fmt.Sprintf("%v", uuid.NewV4())
-		val := _RandBytes(int(rand.Intn(200) + 1))
-		fmt.Println("SET", key, "bytes", len(val))
-
-		db.Set(key, val)
-
-	}
+	callback(db)
 	db.Close()
+}
+
+
+func _TestInsert(dbpath string, count int) {
+
+	data := _RandData(count)
+
+	_Open(dbpath, func(db *gokvdb.DB) {
+
+		for k, v := range data {
+			t1 := time.Now()
+			db.Set(k, v)
+			dt := time.Since(t1)
+			fmt.Println("SET", k, "bytes", len(v), "dt", dt)
+		}
+	})
+
+	_ValidData(dbpath, data)
+
+}
+
+func _ValidData(dbpath string, data map[string][]byte) {
+
+	fmt.Println(strings.Repeat("-", 100))
+
+	fmt.Println(">> ValidData")
+
+	_Open(dbpath, func(db *gokvdb.DB) {
+
+		getCount := 0
+
+		for k, v := range data {
+			val2, _ := db.Get(k)
+
+			compare :=  bytes.Compare(v, val2)
+			getCount += 1
+			fmt.Println(fmt.Sprintf("%07d", getCount), "VALID", k, "compare", compare)
+
+			if compare != 0 {
+				fmt.Println("Value valid error", v, val2)
+				os.Exit(1)
+			}
+
+		}
+	})
+
+
 }
 
 func _TestUpdate(dbpath string, count int) {
 
 	setCount := 0
-	getCount := 0
 	
 	for i:=0; i<count ;i++ {
 		db := gokvdb.OpenHash(dbpath)
@@ -106,21 +144,8 @@ func _TestUpdate(dbpath string, count int) {
 		db.Update(dict)
 		db.Close()
 
-		db = gokvdb.OpenHash(dbpath)
+		_ValidData(dbpath, dict)
 
-		for k, v := range dict {
-			val2, ok := db.Get(k)
-
-			compare :=  bytes.Compare(v, val2)
-			getCount += 1
-			fmt.Println(fmt.Sprintf("%07d", getCount), "Get", k, ok, "compare", compare)
-
-			if compare != 0 {
-				fmt.Println("Value valid error", v, val2)
-				os.Exit(1)
-			}
-		}
-		db.Close()
 	}
 
 }
@@ -132,3 +157,16 @@ func _RandBytes(size int) []byte {
 	}
 	return output
 }
+
+func _RandData(count int) map[string][]byte {
+
+	data := make(map[string][]byte)
+	for i:=0; i<count; i++ {
+			key := fmt.Sprintf("%v", uuid.NewV4())
+			val := _RandBytes(int(rand.Intn(4096) + 65536))
+			data[key] = val
+	}
+
+	return data
+}
+
