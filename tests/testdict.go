@@ -16,8 +16,8 @@ func main() {
 	dbpath := "./testdata/testdict"
 
 	for i:=0; i<1; i++ {
-		//_TestUInt32StrDict(dbpath, "dict_uint32_str")
-		_TestStrUint32Dict(dbpath, "dict_str_uint32")
+		_TestUInt32StrDict(dbpath, "dict_uint32_str")
+		//_TestStrUint32Dict(dbpath, "dict_str_uint32")
 	}
 	
 
@@ -27,7 +27,7 @@ func _TestUInt32StrDict(dbpath string, dictName string) {
 
 	total := 0
 
-	for i:=0; i<1; i++ {
+	for i:=0; i<0; i++ {
 		data := _RandDataUInt32Str(8192)
 
 		_OpenUInt32Str(dbpath, dictName, func(d *gokvdb.LazyUInt32StrDict) {
@@ -44,10 +44,14 @@ func _TestUInt32StrDict(dbpath string, dictName string) {
 
 	for i:=0; i<64; i++ {
 		data := _RandDataUInt32Str(8192)
+
+		t1 := time.Now()
 		_OpenUInt32Str(dbpath, dictName, func(d *gokvdb.LazyUInt32StrDict) {
 			fmt.Println("UPDATE", len(data))
 			d.Update(data)
 		})
+		dt := time.Since(t1)
+		fmt.Println("UPDATE", len(data), "dt", dt)
 		_TestValidUInt32Str(dbpath, dictName, data)
 	}
 
@@ -73,27 +77,43 @@ func _RandDataUInt32Str(testCount int) map[uint32]string {
 	return data
 }
 
-func _OpenUInt32Str(dbpath string, dictName string, callback func(*gokvdb.LazyUInt32StrDict)) {
-	s := gokvdb.OpenLazyStorage(dbpath)
-	dict := s.NewUInt32StrDict(dictName)
+func _OpenStorage(dbpath string, callback func(*gokvdb.LazyStorage)) {
+	s, err := gokvdb.OpenLazyStorage(dbpath)
+	if err == nil {
 
-	callback(dict)
-	s.Close()
+		callback(s)
+		s.Close()
+	}
+}
+
+func _OpenUInt32Str(dbpath string, dictName string, callback func(*gokvdb.LazyUInt32StrDict)) {
+
+	_OpenStorage(dbpath, func(s *gokvdb.LazyStorage) {
+		dict := s.NewUInt32StrDict(dictName)
+
+		callback(dict)
+
+	})
+
 }
 
 func _OpenStrUInt32(dbpath string, dictName string, callback func(*gokvdb.LazyStrUInt32Dict)) {
-	s := gokvdb.OpenLazyStorage(dbpath)
-	dict := s.NewStrUInt32Dict(dictName)
 
-	callback(dict)
-	s.Close()
+	_OpenStorage(dbpath, func(s *gokvdb.LazyStorage) {
+		dict := s.NewStrUInt32Dict(dictName)
+
+		callback(dict)
+
+	})
+
 }
 
 
 func _TestValidUInt32Str(dbpath string, name string, data map[uint32]string) {
-	s := gokvdb.OpenLazyStorage(dbpath)
-	dict := s.NewUInt32StrDict(name)
 
+	_OpenUInt32Str(dbpath, name, func(dict *gokvdb.LazyUInt32StrDict){
+
+		
 	for k, v := range data {
 		
 		val, ok := dict.Get(k)
@@ -103,6 +123,10 @@ func _TestValidUInt32Str(dbpath string, name string, data map[uint32]string) {
 			os.Exit(1)
 		}
 	}
+
+	})
+
+
 }
 
 
@@ -156,18 +180,20 @@ func _TestStrUint32Dict(dbpath string, dictName string) {
 }
 
 func _TestValid(dbpath string, name string, data map[string]uint32) {
-	s := gokvdb.OpenLazyStorage(dbpath)
-	dict := s.NewStrUInt32Dict(name)
 
-	for k, v := range data {
-		fmt.Println("GET", k)
-		val, ok := dict.Get(k)
-		fmt.Println("GET VALID", k, val, ok, v == val)
-		if !ok {
-			fmt.Println("TEST err")
-			os.Exit(1)
+	_OpenStorage(dbpath, func(s *gokvdb.LazyStorage) {
+		dict := s.NewStrUInt32Dict(name)
+		for k, v := range data {
+			fmt.Println("GET", k)
+			val, ok := dict.Get(k)
+			fmt.Println("GET VALID", k, val, ok, v == val)
+			if !ok {
+				fmt.Println("TEST err")
+				os.Exit(1)
+			}
 		}
-	}
+	})
+	
 
 }
 

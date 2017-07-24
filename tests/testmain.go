@@ -44,29 +44,34 @@ func main() {
 
 func _TestItems(dbpath string, isPrint bool) {
 
+
+
+	_Open(dbpath, func(db *gokvdb.DB) {
+
 	t1 := time.Now()
+			i := 0
 
-	db := gokvdb.OpenHash(dbpath)
-	
-	i := 0
-
-	for item := range db.Items() {
-		if isPrint {
-			fmt.Println("Items", i, "key", item.Key(), "bytes", len(item.Value()))
+		for item := range db.Items() {
+			if isPrint {
+				fmt.Println("Items", i, "key", item.Key(), "bytes", len(item.Value()))
+			}
+			i += 1
 		}
-		i += 1
-	}
-	fmt.Println("ItemsTotal", i)
+		fmt.Println("ItemsTotal", i)
 
-	dt := time.Since(t1)
-	fmt.Println("dt", dt)
+		dt := time.Since(t1)
+		fmt.Println("dt", dt)
+
+	})
 
 }
 
 func _Open(dbpath string, callback func(db *gokvdb.DB)) {
-	db := gokvdb.OpenHash(dbpath)
-	callback(db)
-	db.Close()
+	db, err := gokvdb.OpenHash(dbpath)
+	if err == nil {
+		callback(db)
+		db.Close()
+	}
 }
 
 
@@ -96,58 +101,41 @@ func _ValidData(dbpath string, data map[string][]byte) {
 
 	_Open(dbpath, func(db *gokvdb.DB) {
 
-		getCount := 0
+		validCount := 0
 
 		for k, v := range data {
 			val2, _ := db.Get(k)
-
 			compare :=  bytes.Compare(v, val2)
-			getCount += 1
-			fmt.Println(fmt.Sprintf("%07d", getCount), "VALID", k, "compare", compare)
+			validCount += 1
+			//fmt.Println(fmt.Sprintf("%07d", getCount), "VALID", k, "compare", compare)
 
 			if compare != 0 {
-				fmt.Println("Value valid error", v, val2)
+				fmt.Println("Value valid error", len(v), len(val2))
 				os.Exit(1)
 			}
-
 		}
+
+		fmt.Println("VALID SUCCESS count", validCount)
 	})
-
-
 }
 
 func _TestUpdate(dbpath string, count int) {
 
-	setCount := 0
+
 	
 	for i:=0; i<count ;i++ {
-		db := gokvdb.OpenHash(dbpath)
 
-		dict := make(map[string][]byte)
+		dict := _RandData(1024)
 
-		for j:=0; j<1024; j++ {
+		fmt.Println("Update", len(dict))
+		_Open(dbpath, func(db *gokvdb.DB) {			
+			db.Update(dict)			
+		})
 
-			//key := fmt.Sprintf("hello-%v", rand.Int31() + 1)
-			key := fmt.Sprintf("%v", uuid.NewV4())
-			size := int(rand.Intn(200) + 1)
-			val := make([]byte, size)
-			for j:=0; j<size; j++ {
-				val[j] = byte(rand.Intn(255))
-			}
-			dict[key]= val
-
-			setCount += 1
-
-			fmt.Println(fmt.Sprintf("%07d", setCount), "Set", key, "len..", len(val))
-		}		
-
-		db.Update(dict)
-		db.Close()
 
 		_ValidData(dbpath, dict)
 
 	}
-
 }
 
 func _RandBytes(size int) []byte {
@@ -163,7 +151,7 @@ func _RandData(count int) map[string][]byte {
 	data := make(map[string][]byte)
 	for i:=0; i<count; i++ {
 			key := fmt.Sprintf("%v", uuid.NewV4())
-			val := _RandBytes(int(rand.Intn(4096) + 65536))
+			val := _RandBytes(int(rand.Intn(8192) + 8192))
 			data[key] = val
 	}
 

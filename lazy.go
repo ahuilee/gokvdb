@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"bytes"
 	"encoding/gob"
-	"encoding/binary"
 	"hash/fnv"
 )
 
@@ -34,12 +33,15 @@ type LazyUInt32StrDictMeta struct {
 
 
 
-func OpenLazyStorage(dbpath string) *LazyStorage {
+func OpenLazyStorage(dbpath string) (*LazyStorage, error) {
 	s := new(LazyStorage)
-	db := OpenHash(dbpath)
+	db, err := OpenHash(dbpath)
+	if err != nil {
+		return nil, err
+	}
 	s.db = db
 
-	return s
+	return s, nil
 }
 
 func (s *LazyStorage) Close() {
@@ -167,7 +169,6 @@ func (d *LazyStrUInt32Dict) _GetPageKey(key string) string {
 	return pageKey
 }
 
-
 func (d *LazyStrUInt32Dict) _GetPage(key string) *LazyStrUInt32DictPage {
 	pageKey := d._GetPageKey(key)
 
@@ -184,7 +185,9 @@ func (d *LazyStrUInt32Dict) _GetPageByPageKey(pageKey string) *LazyStrUInt32Dict
 
 		pageData, ok := d.storage.db.Get(pageKey)
 		if ok {
-			buf := bytes.NewBuffer(pageData)
+			ds := NewDataStreamFromBuffer(pageData)
+			chunk := ds.ReadChunk()
+			buf := bytes.NewBuffer(chunk)
 			dec := gob.NewDecoder(buf)
 			err := dec.Decode(&context)
 			_CheckErr("LazyStrUInt32Dict _GetPage", err)
@@ -214,11 +217,14 @@ func (d *LazyStrUInt32Dict) Save() {
 		if pg.changed {
 			//fmt.Println("LazyStrUInt32Dict Save", pg)
 			pg.changed = false
+
 			var buf bytes.Buffer
 			enc := gob.NewEncoder(&buf)
 			err := enc.Encode(pg.context)
 			_CheckErr("LazyStrUInt32Dict Save", err)
-			d.storage.db.Set(pgKey, buf.Bytes())
+			w := NewDataStream()
+			w.WriteChunk(buf.Bytes())
+			d.storage.db.Set(pgKey, w.ToBytes())
 		}
 	}
 
@@ -226,17 +232,17 @@ func (d *LazyStrUInt32Dict) Save() {
 		d.metaChanged = false
 		fmt.Println("LazyStrUInt32Dict SAVE META", len(d.meta.pageKeyByHashKey))
 
-		metaData := make([]byte, 4)
-		binary.LittleEndian.PutUint32(metaData, d.meta.lastBranchPageId)
+		w := NewDataStream()
+		w.WriteUInt32(d.meta.lastBranchPageId)
 
 		var buf bytes.Buffer
 
 		enc := gob.NewEncoder(&buf)
 		err := enc.Encode(d.meta.pageKeyByHashKey)
 		_CheckErr("LazyStrUInt32Dict Save META", err)
-		
-		metaData = append(metaData, buf.Bytes()...)
-		d.storage.db.Set(d._GetMetaPageKey(), metaData)
+	
+		w.WriteChunk(buf.Bytes())
+		d.storage.db.Set(d._GetMetaPageKey(), w.ToBytes())
 	}
 }
 
@@ -256,9 +262,12 @@ func (d *LazyStrUInt32Dict) _GetMeta() *LazyStrUInt32DictMeta {
 			var lastBranchPageId uint32			
 			var pageKeyByHashKey map[uint32]string
 
-			lastBranchPageId = binary.LittleEndian.Uint32(pageData)
+			rd := NewDataStreamFromBuffer(pageData)
+
+			lastBranchPageId = rd.ReadUInt32()
+			chunk := rd.ReadChunk()
 		
-			buf := bytes.NewBuffer(pageData[4:])
+			buf := bytes.NewBuffer(chunk)
 			dec := gob.NewDecoder(buf)
 			err := dec.Decode(&pageKeyByHashKey)
 			_CheckErr("LazyStrUInt32Dict GET SCHEMA", err)	
@@ -325,7 +334,9 @@ func (d *LazyUInt32StrDict) _GetPageByPageKey(pageKey string) *LazyUInt32StrDict
 
 		pageData, ok := d.storage.db.Get(pageKey)
 		if ok {
-			buf := bytes.NewBuffer(pageData)
+			rd := NewDataStreamFromBuffer(pageData)
+			chunk := rd.ReadChunk()
+			buf := bytes.NewBuffer(chunk)
 			dec := gob.NewDecoder(buf)
 			err := dec.Decode(&context)
 			_CheckErr("LazyUInt32StrDict _GetPage", err)
@@ -368,10 +379,13 @@ func (d *LazyUInt32StrDict) _GetMeta() *LazyUInt32StrDictMeta {
 
 		//fmt.Println("_GetMeta", ok, pageData)
 		if ok {
+
+			rd := NewDataStreamFromBuffer(pageData)
+			lastBranchPageId := rd.ReadUInt32()
+			chunk := rd.ReadChunk()
 			
 			var pageKeyByBranchId map[uint32]string
-			lastBranchPageId := binary.LittleEndian.Uint32(pageData)
-			buf := bytes.NewBuffer(pageData[4:])
+			buf := bytes.NewBuffer(chunk)
 			dec := gob.NewDecoder(buf)
 			err := dec.Decode(&pageKeyByBranchId)
 			_CheckErr("LazyUInt32StrDict GET SCHEMA", err)	
@@ -433,33 +447,41 @@ func (d *LazyUInt32StrDict) Items() chan ItemUInt32Str {
 
 func (d *LazyUInt32StrDict) Save() {
 
+	changedPgCount := 0
+
 	for pgKey, pg := range d.pages {
 		if pg.changed {
-			//fmt.Println("LazyStrUInt32Dict Save", pg)
+			//fmt.Println("LazyUInt32StrDict Save", pgKey, len(pg.context))
+			changedPgCount += 1
 			pg.changed = false
 			var buf bytes.Buffer
 			enc := gob.NewEncoder(&buf)
 			err := enc.Encode(pg.context)
 			_CheckErr("LazyUInt32StrDict Save", err)
-			d.storage.db.Set(pgKey, buf.Bytes())
+			w := NewDataStream()
+			w.WriteChunk(buf.Bytes())
+			d.storage.db.Set(pgKey, w.ToBytes())
 		}
 	}
+
+	fmt.Println("changedPgCount", changedPgCount)
 
 	if d.metaChanged {
 		d.metaChanged = false
 		fmt.Println("LazyUInt32StrDict SAVE META", len(d.meta.pageKeyByBranchId))
 
-		metaData := make([]byte, 4)
-		binary.LittleEndian.PutUint32(metaData, d.meta.lastBranchPageId)
+		w := NewDataStream()
+		w.WriteUInt32(d.meta.lastBranchPageId)
 
 		var buf bytes.Buffer
 
 		enc := gob.NewEncoder(&buf)
 		err := enc.Encode(d.meta.pageKeyByBranchId)
 		_CheckErr("LazyUInt32StrDict Save META", err)
+
+		w.WriteChunk(buf.Bytes())
 		
-		metaData = append(metaData, buf.Bytes()...)
-		d.storage.db.Set(d._GetMetaPageKey(), metaData)
+		d.storage.db.Set(d._GetMetaPageKey(), w.ToBytes())
 
 	}
 }

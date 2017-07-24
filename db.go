@@ -10,15 +10,24 @@ import (
 	"os"
 	"path/filepath"
 	"hash/fnv"
-	"bytes"
-	"strings"
+	"sync"
+	//"strings"
+	//"sort"
 	"encoding/binary"
-	"encoding/gob"
 )
 
 const HEADER_SIZE int = 512
-const PAGE_SIZE int = 8192
+const PAGE_SIZE int = 4096
 const PAGE_HEADER_SIZE int = 16
+const PAGE_CONENT_SIZE = PAGE_SIZE - PAGE_HEADER_SIZE
+
+const PGTYPE_KEY_PAGE uint8 = 1
+const PGTYPE_VAL_PAGE uint8 = 2
+const PGTYPE_SPACELIST uint8 = 3
+const PGTYPE_HASH_NODE uint8 = 11
+const PGTYPE_NON_CLUSTERED_NODE uint8 = 12
+
+
 
 type DB struct {
 	file *os.File
@@ -26,22 +35,34 @@ type DB struct {
 	header *Header
 
 	byteOrder binary.ByteOrder
-	keyRoot *KeyRoot
-	valRoot *ValRoot
+	//keyRoot *KeyRoot
+	spaceList *SpaceList
 
+	hashNodes map[uint32]*HashNode
+	nonClusteredNodes map[uint32]*NonClusteredNode
 	keyPages map[uint32]*KeyPage
 	valPages map[uint32]*ValPage
+
+	lock sync.Mutex
+	
 }
 
 type Header struct {
 	lastPageId uint32
-	lastRowId uint64
+	lastKeyId uint64
+	lastBranchId uint64
 	keyRootPageId uint32
-	valRootPageId uint32
+	branchRootPageId uint32
+	spaceListPageId uint32
+}
+
+func (h *Header) ToString() string {
+	return fmt.Sprintf("<Header lastPageId=%v lastKeyId=%v lastBranchId=%v keyRootPageId=%v branchRootPageId=%v spaceListPageId=%v>", h.lastPageId, h.lastKeyId, h.lastBranchId, h.keyRootPageId, h.branchRootPageId, h.spaceListPageId)
 }
 
 type PageHeader struct {
-	nextPageId uint32
+	pageId uint32
+	payloadPageId uint32
 	dataLen uint16
 }
 
@@ -52,34 +73,56 @@ type Page struct {
 }
 
 type Item struct {
-	rowId uint64
 	key string
-	//value []byte
+	info KeyInfo
 	db *DB
+}
+
+type PgMeta struct {
+	pid uint32
+	pgType uint8
+}
+
+type PgMetaError struct {
+	message string
+}
+
+func (e PgMetaError) Error() string {
+	return fmt.Sprintf("PgMetaError: %v", e.message)
+}
+
+func (p PgMeta) Valid(pid uint32, pgType uint8) error {
+	if pid != p.pid {
+		return PgMetaError{message: fmt.Sprintf("pgType=%v pid error %v != %v", pgType, pid, p.pid)}
+	}
+
+	if pgType != p.pgType {
+		return PgMetaError{message: fmt.Sprintf("pgType error %v != %v pid=%v", pgType, p.pgType, pid)}
+	}
+
+	return nil
+}
+
+type KeyInfo struct {
+	keyId uint64	
+	isDeleted bool	
+	branchId uint64	
 }
 
 type KeyPage struct {
 	pid uint32
-	rowIdByKey map[string]uint64
+	infoByKey map[string]KeyInfo
 	changed bool
+}
+
+func (p *KeyPage) ToString() string {
+	return fmt.Sprintf("<KeyPage pid=%v>", p.pid)
 }
 
 type ValPage struct {
 	pid uint32
-	valueByRowId map[uint64][]byte
+	valueByKeyId map[uint64][]byte
 	changed bool
-}
-
-type KeyRoot struct {
-	pid uint32
-	changed bool
-	keyPageIdByHash map[uint32]uint32
-}
-
-type ValRoot struct {
-	pid uint32
-	changed bool
-	valPageIdByBranch map[uint32]uint32
 }
 
 func (p *Page) ToString() string {
@@ -87,7 +130,7 @@ func (p *Page) ToString() string {
 }
 
 func (h *PageHeader) ToString() string {
-	return fmt.Sprintf("<PageHeader nextPageId=%v dataLen=%v>", h.nextPageId, h.dataLen)
+	return fmt.Sprintf("<PageHeader pageId=%v payloadPageId=%v dataLen=%v>", h.pageId, h.payloadPageId, h.dataLen)
 }
 
 func _HashKey(key string) uint32 {
@@ -100,11 +143,7 @@ func (db *DB) ToString() string {
 	return fmt.Sprintf("<DB path=%v>", db.path)
 }
 
-func (h *Header) ToString() string {
-	return fmt.Sprintf("<Header lastPageId=%v lastRowId=%v keyRootPageId=%v valRootPageId=%v>", h.lastPageId, h.lastRowId, h.keyRootPageId, h.valRootPageId)
-}
-
-func OpenHash(path string) *DB {
+func OpenHash(path string) (*DB, error) {
 	db := new(DB)
 
 	fullpath, _ := filepath.Abs(path)
@@ -118,22 +157,32 @@ func OpenHash(path string) *DB {
 	db.byteOrder = binary.LittleEndian
 	db.path = fullpath
 
+
 	db.file, err = os.OpenFile(fullpath, os.O_RDWR | os.O_CREATE, 0666)
-	fmt.Println(db, err, fullpath)
+	if err != nil  {
+		db.Close()
+		return nil, err
+	}
+	//fmt.Println(db, err, fullpath)
 	
-	db.header = _ReadHeader(db.file, db.byteOrder)
+	db.header = _ReadHeader(db.file)
+	db.hashNodes = make(map[uint32]*HashNode)
+	db.nonClusteredNodes = make(map[uint32]*NonClusteredNode)
+
 	db.keyPages = make(map[uint32]*KeyPage)
 	db.valPages = make(map[uint32]*ValPage)
 
-	fmt.Println(strings.Repeat("-", 30))
-	fmt.Println("OPEN DB")
+	//fmt.Println(strings.Repeat("-", 30))
 
-	fmt.Println(db.header.ToString())
+	fmt.Println("OPEN", db.header.ToString())
 
-	return db
+	return db, nil
 }
 
 func (db *DB) Close() {
+	db.lock.Lock()
+	defer db.lock.Unlock()
+
 	if db.file != nil {
 		db.file.Close()
 		db.file = nil
@@ -145,7 +194,10 @@ func (i *Item) Key() string {
 }
 
 func (i *Item) Value() []byte {
-	value, ok := i.db._GetValueByRowId(i.rowId)
+	valPage := i.db._GetValuePageByBranchId(i.info.branchId)
+	
+	value, ok := valPage.valueByKeyId[i.info.keyId]
+
 	if !ok {
 		fmt.Println("_GetValueByRowId !ok")
 		os.Exit(1)
@@ -161,19 +213,31 @@ func (db *DB) Items() chan Item {
 	go func(ch chan Item) {
 		root := db._GetKeyRoot()
 
-		for _, pid := range root.keyPageIdByHash {
-			keyPage := db._GetKeyPageByPid(pid)
+		var keyPageIds []uint32
+		for _, pid := range root.context {
+			keyPageIds = append(keyPageIds, pid)
+		}
+
+		//sort.Ints(keyPageIds)
+
+		for _, pid := range keyPageIds {
+
+			keyPage, err := db._GetKeyPageByPid(pid)
+			if err != nil {
+				fmt.Println(">>Items", err)
+				os.Exit(1)
+			}
 			//fmt.Println("Items", "hashKey", hashKey, pid)
 			
-			for key, rowId := range keyPage.rowIdByKey {
+			for key, info := range keyPage.infoByKey {
 				
 				//fmt.Println("DB Items", key, len(value))
-				item := Item{rowId: rowId, key: key, db: db}
+				item := Item{key: key, info: info, db: db}
 				ch <-item
 			}
 		}
 
-		fmt.Println("Items END")
+		//fmt.Println("Items END")
 
 		close(ch)
 	}	(q)
@@ -181,154 +245,117 @@ func (db *DB) Items() chan Item {
 	return q
 }
 
-func (db *DB) _Set(key string, value []byte) {
 
-	keyPage := db._GetKeyPage(key)
 
-	rowId, ok := keyPage.rowIdByKey[key]
-	if !ok {
-		rowId = db._CreateRowId()
-		keyPage.rowIdByKey[key] = rowId
-		keyPage.changed = true
-	}
-
-	valPage := db._GetValuePageByRowId(rowId)
-	valPage.valueByRowId[rowId] = value
-	valPage.changed = true
-
-}
-
-func (db *DB) Set(key string, value []byte) {
-	db._Set(key, value)
-	db.Save()
-}
-
-func (db *DB) Get(key string) ([]byte, bool) {
-	keyPage := db._GetKeyPage(key)
-
-	//fmt.Println("key", key, "GET KEYPAGE", keyPage)
-	
-	rowId, ok := keyPage.rowIdByKey[key]
-	if ok {
-		valPage := db._GetValuePageByRowId(rowId)
-		//fmt.Println("rowId", rowId, "GET VALPAGE", valPage)
-		val, ok := valPage.valueByRowId[rowId]
-
-		return val, ok
-	}
-
-	return nil, false
+func (db *DB) _InsertBranch(branchId uint64, valPageId uint32) {
+	branchRoot := db._GetBranchRoot()
+	db._InsertNonClusteredValue(branchRoot, branchId, valPageId)
 }
 
 func (db *DB) Update(data map[string][]byte) {
-
 	fmt.Println(db.ToString(), "UPDATE", len(data))
 
 	for k, v := range data {
 		db._Set(k, v)
 	}
 
-	db.Save()
-
+	db._Save()
 }
 
 
-func _PackPageHeader(pageHeader PageHeader, order binary.ByteOrder) []byte {
+func (db *DB) Set(key string, value []byte) {
+	db._Set(key, value)
+	db._Save()
+}
+
+func (db *DB) Get(key string) ([]byte, bool) {
+	keyPage, err := db._GetKeyPage(key)
+	_CheckErr("DB Get", err)
 	
-	buf := new(bytes.Buffer)
+	info, ok := keyPage.infoByKey[key]
+	//fmt.Println("key", key, "GET KEYPAGE", keyPage.ToString(), "info", info, ok)
+	if ok {
+		valPage := db._GetValuePageByBranchId(info.branchId)
+		//fmt.Println("info", info.keyId, "GET VALPAGE", valPage)
+		if valPage != nil {
 
-	binary.Write(buf, order, uint32(pageHeader.nextPageId))
-	binary.Write(buf, order, uint16(pageHeader.dataLen))
+			val, ok := valPage.valueByKeyId[info.keyId]
+			return val, ok
+		}
 
-	padding := make([]byte, PAGE_HEADER_SIZE - buf.Len())
-
-	return append(buf.Bytes(), padding...)
-}
-
-func _PackHeader(hdr *Header, order binary.ByteOrder) []byte {
-	
-	buf := new(bytes.Buffer)
-	binary.Write(buf, order, uint32(hdr.lastPageId))
-	binary.Write(buf, order, uint64(hdr.lastRowId))
-	binary.Write(buf, order, uint32(hdr.keyRootPageId))
-	binary.Write(buf, order, uint32(hdr.valRootPageId))
-
-	//fmt.Println("_PackHeader hdr.keyRootPageId", hdr.keyRootPageId, hdr.valRootPageId)
-
-	return buf.Bytes()
-}
-
-func _ReadHeader(f *os.File, order binary.ByteOrder) *Header {
-
-	hdrBytes := make([]byte, HEADER_SIZE)
-	f.Seek(0, os.SEEK_SET)
-	_, err := f.Read(hdrBytes)
-
-	//fmt.Println("_ReadHeader", hdrBytes)
-
-	var lastPageId uint32
-	var lastRowId uint64
-	var keyRootPageId uint32
-	var valRootPageId uint32
-
-	hdr := new(Header)	
-
-	if err != nil {
-		
-		return hdr
 	}
 
-	buf := bytes.NewReader(hdrBytes)
-
-	binary.Read(buf, order, &lastPageId)
-	binary.Read(buf, order, &lastRowId)
-	binary.Read(buf, order, &keyRootPageId)
-	binary.Read(buf, order, &valRootPageId)
-
-	hdr.lastPageId = lastPageId
-	hdr.lastRowId = lastRowId
-	hdr.keyRootPageId = keyRootPageId
-	hdr.valRootPageId = valRootPageId
-	
-
-	return hdr
+	return nil, false
 }
 
+func (db *DB) _Set(key string, value []byte) {
 
-func (db *DB) Save() {
+	keyPage, err := db._GetKeyPage(key)
+	_CheckErr("DB SET", err)
+	info, ok := keyPage.infoByKey[key]
+
+	if !ok {
+		
+		branchId := db._FindOrCreateSpaceBranchValPage(len(value))
+		//fmt.Println("_InsertBranch DONE")
+
+		keyId := db._CreateKeyId()
+		info = KeyInfo{isDeleted: false, branchId: branchId, keyId:keyId}
+		keyPage.infoByKey[key] = info
+		keyPage.changed = true
+	}
+
+	valPage := db._GetValuePageByBranchId(info.branchId)
+	//fmt.Println(">>>>> _GetValuePageByBranchId", valPage)
+	if valPage == nil {
+		fmt.Println("DB _Set ValPage cant nil")
+		os.Exit(1)
+	}
+
+	
+	valPage.valueByKeyId[info.keyId] = value
+	valPage.changed = true
+
+	spaceList := db._GetSpaceList()
+	spaceList.Append(info.branchId, valPage)
+}
+
+func (db *DB) _Save() {
 	//fmt.Println(strings.Repeat("-", 30))
 	//fmt.Println("SAVE", db.ToString())
 
 	var pageData []byte
+	var err error
 
 	f := db.file
 
-	if db.keyRoot != nil {
-		if db.keyRoot.changed {
-			db.keyRoot.changed = false
-			pageData = _Pack2Bytes(db.keyRoot.keyPageIdByHash)
-			//fmt.Println("SAVE KEY ROOT", db.keyRoot.pid)
-			db._SavePayloadData(db.keyRoot.pid, pageData)
+	for _, node := range db.nonClusteredNodes {
+		if node.changed {
+			node.changed = true
+			//fmt.Println("SAVE", pid, node.ToString())
+			pageData, err = _Dumps(node)
+			_CheckErr("DB Save", err)
+			db._SavePayloadData(node.pid, pageData)
 		}
 	}
 
-	if db.valRoot != nil {
-		if db.valRoot.changed {
-			db.valRoot.changed = false
-			pageData = _Pack2Bytes(db.valRoot.valPageIdByBranch)
-			//fmt.Println("SAVE VAL ROOT", db.keyRoot.pid)
-			db._SavePayloadData(db.valRoot.pid, pageData)
+	for _, node := range db.hashNodes {
+		if node.changed {
+			node.changed = true
+			//fmt.Println("SAVE",pid, node.ToString())
+			pageData, err = _Dumps(node)
+			_CheckErr("DB Save", err)
+			db._SavePayloadData(node.pid, pageData)
 		}
 	}
-
-	//fmt.Println("db.keyPages", len(db.keyPages))
 
 	for pid, keyPage := range db.keyPages {
 		if keyPage.changed {
 			//fmt.Println(strings.Repeat("-", 30))
 			//fmt.Println("** KEYPAGE SAVE **", pid)
 			keyPage.changed = false
-			pageData = _Pack2Bytes(keyPage.rowIdByKey)
+			pageData, err = _Dumps(keyPage)
+			_CheckErr("DB Save", err)
 			//fmt.Println(">> KEYPAGE SAVE", keyPage.rowIdByKey)
 			db._SavePayloadData(pid, pageData)
 		}
@@ -339,12 +366,26 @@ func (db *DB) Save() {
 			//fmt.Println(strings.Repeat("-", 30))
 			//fmt.Println("** KEYPAGE SAVE **", pid)
 			page.changed = false
-			pageData = _Pack2Bytes(page.valueByRowId)
+			pageData, err = _Dumps(page)
+			_CheckErr("DB Save", err)
+		
 			//fmt.Println(">> KEYPAGE SAVE", pageData)
 			db._SavePayloadData(pid, pageData)
 		}
 	}
 
+	if db.spaceList != nil {
+		if db.spaceList.changed {
+			db.spaceList.changed = false
+			pageData, err = _Dumps(db.spaceList)
+			_CheckErr("DB Save", err)
+			//fmt.Println("SAVE", db.spaceList.ToString())	
+			db._SavePayloadData(db.spaceList.pid, pageData)
+
+		}
+	}
+
+	//fmt.Println("SAVE header.......", db.header.ToString())
 
 	headerData := _PackHeader(db.header, db.byteOrder)
 
@@ -353,9 +394,62 @@ func (db *DB) Save() {
 
 	f.Seek(0, os.SEEK_SET)
 	f.Write(headerData)
+	f.Sync()
+}
+
+func (db *DB) _FindOrCreateSpaceBranchValPage(sizeRequired int) uint64 {
+
+	var branchId uint64
+
+	spaceList := db._GetSpaceList()
+	branchId, ok := spaceList.Find(sizeRequired)
+	//fmt.Println("_FindOrCreateSpaceBranchValPage", spaceList.ToString(), branchId, ok)
+
+	if ok {
+		return branchId
+	}
+
+	branchId = db._CreateBranchId()
+	newValPage := db._CreateValPage()
+	db._InsertBranch(branchId, newValPage.pid)
+
+
+
+	return branchId
 }
 
 
+func (db *DB) _GetSpaceList() *SpaceList {
+
+	if db.spaceList == nil {
+
+		var spaceList *SpaceList
+		
+		if db.header.spaceListPageId == 0 {
+			pid := db._CreatePageId()
+			spaceList = _NewSpaceList(pid)	
+			spaceList.changed = true
+			
+			db.header.spaceListPageId = spaceList.pid	
+		} else {
+			
+			dataBytes, err := db._LoadPayloadPage(db.header.spaceListPageId)
+			
+			if err != nil {
+				fmt.Println("_GetSpaceList ERROR", err)
+				os.Exit(1)
+			}
+	
+			_spaceList, err := _Loads(dataBytes, db.header.spaceListPageId, PGTYPE_SPACELIST)
+
+			spaceList = _spaceList.(*SpaceList)
+		}
+
+		db.spaceList  = spaceList
+	}
+
+	return db.spaceList
+}
 
 func (db *DB) _CreatePageId() uint32 {
 	pid := db.header.lastPageId + 1
@@ -363,34 +457,55 @@ func (db *DB) _CreatePageId() uint32 {
 	return pid
 }
 
-func (db *DB) _CreateRowId() uint64 {
-	vid := db.header.lastRowId + 1
-	db.header.lastRowId = vid
-	return vid
+func (db *DB) _CreateKeyId() uint64 {
+	bid := db.header.lastKeyId + 1
+	db.header.lastKeyId = bid
+	return bid
 }
 
-func (db *DB) _NewKeyPage() *KeyPage {
+func (db *DB) _CreateBranchId() uint64 {
+	bid := db.header.lastBranchId + 1
+	db.header.lastBranchId = bid
+	return bid
+}
+
+func _NewKeyPage() *KeyPage {
 	
 	keyPage := new(KeyPage)
 	keyPage.pid = 0
-	keyPage.rowIdByKey = make(map[string]uint64)
+	keyPage.infoByKey = make(map[string]KeyInfo)
 
 	return keyPage
 }
 
-func (db *DB) _NewValPage() *ValPage {
+func _NewValPage() *ValPage {
 	
 	valPage := new(ValPage)
 	valPage.pid = 0
-	valPage.valueByRowId = make(map[uint64][]byte)
+	valPage.valueByKeyId = make(map[uint64][]byte)
 
 	return valPage
+}
+
+func (p *ValPage) CalcSize() int {
+
+	var count int
+	count = PAGE_HEADER_SIZE
+
+	for _, val := range p.valueByKeyId {
+		//fmt.Println("CalcSize", p.pid, len(val))
+		count += 4
+		count += len(val)
+	}
+	//fmt.Println("CalcSize count", len(p.valueByKeyId))
+
+	return count
 }
 
 
 func (db *DB) _CreateKeyPage() *KeyPage {
 
-	keyPage := db._NewKeyPage()
+	keyPage := _NewKeyPage()
 	keyPage.pid = db._CreatePageId()
 	keyPage.changed = true
 
@@ -399,395 +514,246 @@ func (db *DB) _CreateKeyPage() *KeyPage {
 
 func (db *DB) _CreateValPage() *ValPage {
 
-	valPage := db._NewValPage()
+	valPage := _NewValPage()
 	valPage.pid = db._CreatePageId()
 	valPage.changed = true
+	db.valPages[valPage.pid] = valPage
 
 	return valPage
 }
 
 
+func (db *DB) _WritePageData(pid uint32, data []byte) {
+	db.lock.Lock()
+	defer db.lock.Unlock()
+
+	if len(data) != PAGE_SIZE {
+		fmt.Printf("_WritePageData size needs %v is not %v\n", PAGE_SIZE, len(data))
+		os.Exit(1)
+	}
+
+	header := _LoadPageHeder(data[:PAGE_HEADER_SIZE])
+	if header.pageId != pid {
+		fmt.Printf("_WritePageData Error! header.pageId=%v pid=%v\n", header.pageId, pid)
+		os.Exit(1)
+	}
+
+	seek2 := db._CalcOffsetByPid(pid)
+
+	db.file.Seek(seek2, os.SEEK_SET)
+	db.file.Write(data)
+}
+
+func (db *DB) _CalcOffsetByPid(pid uint32) int64 {
+	return int64(pid) * int64(PAGE_SIZE)
+}
 
 
 func (db *DB) _LoadPageData(pid uint32, size int) (int, error, []byte) {
+	db.lock.Lock()
+	defer db.lock.Unlock()
 
 	f := db.file
 
 	pageData := make([]byte, size)
-	seek2 := int64(pid) * int64(PAGE_SIZE)
+	seek2 := db._CalcOffsetByPid(pid)
+
 	f.Seek(seek2, os.SEEK_SET)
 	rtn, err := f.Read(pageData)
-
+	//sfmt.Println("_LoadPageData pid=", pid, "seek2", seek2)
 	return rtn, err, pageData
 }
 
-func _LoadPageHeder(data []byte, order binary.ByteOrder) PageHeader {
-
-	var nextPageId uint32
-	var dataLen uint16
-
-	buf := bytes.NewReader(data)
-
-	binary.Read(buf, order, &nextPageId)
-	binary.Read(buf, order, &dataLen)
-
-	return PageHeader{nextPageId: nextPageId, dataLen: dataLen}
-}
-
-func (db *DB) _LoadPage(pid uint32) *Page {
+func (db *DB) _LoadPage(pid uint32) (*Page, error) {
 
 	if pid < 1 {
-		fmt.Println("LOAD PAGE ERROR pid", pid)
-		os.Exit(1)
+		return nil, DBError{message: fmt.Sprintf("LOAD PAGE ERROR pid=%v", pid)}
 	}
 
 	rtn, err, pageData := db._LoadPageData(pid, PAGE_SIZE)
 
-	if err == nil {
-		if rtn == PAGE_SIZE {
+	if err != nil {
+		return nil, err
+	}
+	if rtn != PAGE_SIZE {
+		return nil, DBError{message: fmt.Sprintf("LOAD PAGE ERROR pid=%v readSize==%v\n", pid, rtn)}
+	}
 
-			pageHeader := _LoadPageHeder(pageData, db.byteOrder)
+	pageHeader := _LoadPageHeder(pageData[:PAGE_HEADER_SIZE])
+	if pageHeader.pageId != pid {
+		return nil, DBError{message: fmt.Sprintf("LOAD PAGE ERROR pid=%v headerPageId=%v\n", pid, pageHeader.pageId)}
+	}
+	pageData = pageData[PAGE_HEADER_SIZE:(PAGE_HEADER_SIZE+int(pageHeader.dataLen))]
 
-			page := new(Page)
-			page.pid = pid
-			page.header = pageHeader
-			page.data = pageData[PAGE_HEADER_SIZE:(PAGE_HEADER_SIZE+int(pageHeader.dataLen))]		
-			return page
+	page := new(Page)
+	page.pid = pid
+	page.header = pageHeader
+	page.data = pageData
+	return page, nil
+}
+
+func (db *DB) _GetKeyRoot() *HashNode {
+
+	if db.header.keyRootPageId == 0 {
+		node := db._CreateHashNode(0x7fff)		
+		db.header.keyRootPageId = node.pid	
+	}
+
+	node, ok := db._GetHashNode(db.header.keyRootPageId)
+
+	if !ok {
+		fmt.Println("_GetKeyRoot no ok! logic err")
+		os.Exit(1)
+	}
+
+	return node
+}
+
+func (db *DB) _CreateNonClusteredIndex(depth uint8) *NonClusteredNode {
+	if depth == 1 {
+		return db._CreateNonClusteredNode(NON_CLUSTERED_DATA, 0)
+	}
+
+	var stack []*NonClusteredNode
+	var parent *NonClusteredNode
+
+	curDepth := depth
+
+	for  {
+		curDepth -= 1
+
+		if curDepth < 1 {
+			break
 		}
+
+		node := db._CreateNonClusteredNode(NON_CLUSTERED_BRANCH, curDepth)
+		stack = append(stack, node)
+		if parent != nil {
+			parent.context[uint64(0)] = uint64(node.pid)
+		}
+
+		parent = node
+		
+	}
+
+	node := db._CreateNonClusteredNode(NON_CLUSTERED_DATA, 0)
+	parent.context[0] = uint64(node.pid)
+	stack = append(stack, node)
+
+	return stack[0]
+}
+
+func (db *DB) _GetBranchRoot() *NonClusteredNode {
+
+	var node *NonClusteredNode
+
+	if db.header.branchRootPageId == 0 {
+		node = db._CreateNonClusteredIndex(3)
+		db.header.branchRootPageId = node.pid
+		db.nonClusteredNodes[node.pid] = node		
+	}
+
+	node, ok := db._GetNonClusteredNode(db.header.branchRootPageId)
+	if !ok {
+		fmt.Println("!!! NO OK LOGIC ERROR")
+		os.Exit(1)
+	}
+
+	if node == nil {
+		fmt.Println("_GetBranchRoot root is nil")
+		os.Exit(1)
+	}
+
+	return node
+}
+
+func (db *DB) _GetValuePageByBranchId(branchId uint64) *ValPage {
+	branchRoot := db._GetBranchRoot()
+	valPageId, ok := db._GetNonClusteredValue(branchRoot, branchId)
+
+	if ok {
+		valPage, err := db._GetValPageByPid(uint32(valPageId))
+		if err != nil {
+			fmt.Println("_GetValuePageByBranchId branchId=", branchId, valPageId, ok)
+
+		}
+		_CheckErr("_GetValuePageByBranchId", err)
+		
+		return valPage
 	}
 
 	return nil
 }
 
-func (db *DB) _LoadPayloadPage(pid uint32) []byte {
 
-		//fmt.Println("_LoadPayloadPage", pid)
-		var allBytes []byte
-		nextPageId := pid
-		loopCount := 0
-
-		for {
-			if nextPageId == 0 {
-				break
-			}
-
-			loopCount += 1
-			//fmt.Println("_LoadPayloadPage loopCount", loopCount, "pid", pid)
-			page := db._LoadPage(nextPageId)
-			if page == nil {
-				break
-			}
-			//fmt.Println("_LoadPayloadPage", "page=", page.ToString())
-			allBytes = append(allBytes, page.data...)
-			nextPageId = page.header.nextPageId
-		}
-		return allBytes
-}
-
-func (db *DB) _GetKeyRoot() *KeyRoot {
-
-	if db.keyRoot == nil {
-		fmt.Println("db.keyPage == nil", db.header.keyRootPageId)
-		keyRoot := new(KeyRoot)
-		keyRoot.keyPageIdByHash = make(map[uint32]uint32)
-
-		if db.header.keyRootPageId == 0 {
-			pid := db._CreatePageId()
-			db.header.keyRootPageId = pid	
-
-		} else {
-
-			dataBytes := db._LoadPayloadPage(db.header.keyRootPageId)
-
-			fmt.Println("_GetKeyRoot >> _LoadPayloadPage", len(dataBytes))
-
-			dict := _UnpackBytes(dataBytes, keyRoot.keyPageIdByHash)
-
-			keyRoot.keyPageIdByHash = dict.(map[uint32]uint32)
-
-			fmt.Println(">> GetKeyRoot SUCCESS:")
-		}
-
-		keyRoot.pid = db.header.keyRootPageId
-
-		db.keyRoot = keyRoot
-	}
-
-	return db.keyRoot
-}
-
-func (db *DB) _GetValRoot() *ValRoot {
-
-	if db.valRoot == nil {
-		fmt.Println("db.valRoot == nil", db.header.valRootPageId)
-		valRoot := new(ValRoot)
-		valRoot.valPageIdByBranch = make(map[uint32]uint32)
-		
-
-		if db.header.valRootPageId == 0 {
-			pid := db._CreatePageId()
-			db.header.valRootPageId = pid	
-
-		} else {
-
-			dataBytes := db._LoadPayloadPage(db.header.valRootPageId)
-
-			fmt.Println("_GetValRoot >> _LoadPayloadPage", len(dataBytes))
-
-			dict := _UnpackBytes(dataBytes, valRoot.valPageIdByBranch)
-
-			valRoot.valPageIdByBranch = dict.(map[uint32]uint32)
-
-			fmt.Println(">> GetKeyRoot SUCCESS:")
-		}
-
-		valRoot.pid = db.header.valRootPageId
-
-		db.valRoot = valRoot
-	}
-
-	return db.valRoot
-}
-
-func (db *DB) _GetValueByRowId(rowId uint64) ([]byte, bool) {
-
-	valPage := db._GetValuePageByRowId(rowId)
-
-	val, ok := valPage.valueByRowId[rowId]
-
-	return val, ok
-}
-
-func (db *DB) _GetValuePageByRowId(rowId uint64) *ValPage {
-
-	branchKey := uint32(rowId / 128)
-	root := db._GetValRoot()
-
-	pid, ok := root.valPageIdByBranch[branchKey]
-
-	if !ok {
-		//fmt.Println("!ok", pid, ok)
-		valPage := db._CreateValPage()
-
-		root.valPageIdByBranch[branchKey] = valPage.pid
-		root.changed = true
-		pid = valPage.pid
-
-		db.valPages[pid] = valPage
-		return valPage
-	}
-
-	return db._GetValPageByPid(pid)
-}
-
-func (db *DB) _GetValPageByPid(pid uint32) *ValPage {
-	var valPage *ValPage
-
-	valPage, ok := db.valPages[pid]
-	if !ok {
-		
-		dataBytes := db._LoadPayloadPage(pid)
-		
-		valPage = db._NewValPage()
-		valPage.pid = pid
-
-		fmt.Println("LOAD valueByRowId dataBytes", len(dataBytes))
-
-		valueByRowId := _UnpackBytes(dataBytes, valPage.valueByRowId).(map[uint64][]byte)
-		//fmt.Println("LOAD valueByRowId", valueByRowId)
-		valPage.valueByRowId = valueByRowId
-		db.valPages[pid] = valPage
-	}
-
-	return valPage
-
-}
-
-func (db *DB) _GetKeyPage(key string) *KeyPage {
-
-	hashKey := _HashKey(key)
-	root := db._GetKeyRoot()
-
-	pid, ok := root.keyPageIdByHash[hashKey]
-
-	if !ok {
-		//fmt.Println("!ok", pid, ok)
-		keyPage := db._CreateKeyPage()
-
-		root.keyPageIdByHash[hashKey] = keyPage.pid
-		root.changed = true
-		pid = keyPage.pid
-
-		db.keyPages[pid] = keyPage
-		return keyPage
-	}
-
-	return db._GetKeyPageByPid(pid)
-}
-
-func (db *DB) _GetKeyPageByPid(pid uint32) *KeyPage {
+func (db *DB) _GetKeyPageByPid(pid uint32) (*KeyPage, error) {
 	var keyPage *KeyPage
 
 	keyPage, ok := db.keyPages[pid]
 	if !ok {
 		//fmt.Println("** LOAD KEYPAGE **")
-		dataBytes := db._LoadPayloadPage(pid)
+		dataBytes, err := db._LoadPayloadPage(pid)
+
+		if err != nil {
+			return nil, err
+		}
 		//fmt.Println("LOAD KEYPAGE SUCCESS:", len(dataBytes))
-		keyPage = db._NewKeyPage()
-		keyPage.pid = pid
+		_keyPage, err := _Loads(dataBytes, pid, PGTYPE_KEY_PAGE)
+		if err != nil {
+			return nil, err
+		}
 
-		rowIdByKey := _UnpackBytes(dataBytes, keyPage.rowIdByKey).(map[string]uint64)
-		keyPage.rowIdByKey = rowIdByKey
+		keyPage = _keyPage.(*KeyPage)
 		db.keyPages[pid] = keyPage
+
+		return  keyPage, nil
 	}
 
-	return keyPage
+	return keyPage, nil
 }
 
-func (db *DB) _SavePayloadData(pid uint32, data []byte) {
-	//fmt.Println("_SavePayloadData", "pid=", pid)
 
-	if pid < 1 {
-		fmt.Println("_SavePayloadData ERROR pid=", pid)
-		os.Exit(1)
+func (db *DB) _GetValPageByPid(pid uint32) (*ValPage, error) {
+	var valPage *ValPage
+
+	valPage, ok := db.valPages[pid]
+	if !ok {
+		
+		dataBytes, err := db._LoadPayloadPage(pid)
+		if err != nil {
+			return nil, err
+		}
+		_valPage, err := _Loads(dataBytes, pid, PGTYPE_VAL_PAGE)
+		if err != nil {
+			return nil, err
+		}
+		valPage = _valPage.(*ValPage)
+		db.valPages[pid] = valPage		
 	}
 
-	var curPageId uint32
-	var nextPageId uint32
-	var seek2 int64
-	var iStart int
-	var iEnd int
+	return valPage, nil
 
-	nextPageId = pid
-
-	pageContentSize := PAGE_SIZE - PAGE_HEADER_SIZE
-	iStart = 0
-	f := db.file
-
-	loopCount := 0
-
-	for {
-		if iStart >= len(data) {
-			break
-		}
-
-		loopCount += 1
-
-		curPageId = nextPageId
-
-		var pageHeader PageHeader
-
-		_, err, pageHeaderData := db._LoadPageData(curPageId, PAGE_HEADER_SIZE)
-		if err == nil {
-			pageHeader = _LoadPageHeder(pageHeaderData, db.byteOrder)
-		} else {
-			pageHeader = PageHeader{nextPageId: 0, dataLen: 0}
-		}
-
-		iEnd = iStart + pageContentSize
-
-		if iEnd >= len(data) {
-			iEnd = len(data)
-		} else {
-			if pageHeader.nextPageId == 0 {
-				pageHeader.nextPageId = db._CreatePageId()
-			}
-		}
-
-		//fmt.Println("iStart", iStart, "iEnd", iEnd)
-
-		pageContentData := data[iStart:iEnd]
-
-		//fmt.Println("pageContentData", len(pageContentData))
-
-		pageHeader.dataLen = uint16(len(pageContentData))
-		pageHeaderData = _PackPageHeader(pageHeader, db.byteOrder)
-
-		//fmt.Println("pageHeaderData", len(pageHeaderData))
-
-		if len(pageHeaderData) != PAGE_HEADER_SIZE {
-			fmt.Println(fmt.Sprintf("len(pageHeaderData) != %v", PAGE_HEADER_SIZE))
-			os.Exit(1)
-		}
-
-		var pageData []byte
-		pageData = append(pageData, pageHeaderData...)
-		pageData = append(pageData, pageContentData...)
-
-		pagePaddingSize := PAGE_SIZE - len(pageData)
-		if pagePaddingSize < 0 {
-			fmt.Println(fmt.Sprintln("pagesize over %v", PAGE_SIZE))
-			os.Exit(1)
-		}
-
-		if pagePaddingSize > 0 {
-			pageData = append(pageData, make([]byte, pagePaddingSize)...)			
-		}
-
-		//fmt.Println("SAVE pageData", "pid=", curPageId, "len", len(pageData))
-
-		seek2 = int64(curPageId) * int64(PAGE_SIZE)
-		f.Seek(seek2, os.SEEK_SET)
-		f.Write(pageData)
-
-		nextPageId = pageHeader.nextPageId
-		iStart = iEnd
-	}
 }
 
-func _CheckErr(message string, err error) {
-	if err != nil {
-		fmt.Println(message, "ERROR", err)
-		os.Exit(1)
-	}
-}
+func (db *DB) _GetKeyPage(key string) (*KeyPage, error) {
 
-func _UnpackBytes(data []byte, unpackType interface{}) interface{} {
+	hashKey := _HashKey(key)
+	root := db._GetKeyRoot()
+	
+	pid, ok := root.context[hashKey]
 
-	var err error
+	if !ok {
+		//fmt.Println("!ok", pid, ok)
+		keyPage := db._CreateKeyPage()
 
-	buf := bytes.NewBuffer(data)
-	dec := gob.NewDecoder(buf)	
+		root.context[hashKey] = keyPage.pid
+		root.changed = true
+		pid = keyPage.pid
 
-	switch unpackType.(type) {
-		case map[uint32]uint32:
-			var dict map[uint32]uint32
-			err = dec.Decode(&dict)
-			_CheckErr("_UnpackBytes map[uint32]uint32", err)
-			return dict
-		case map[uint32]string:
-			var dict map[uint32]string
-			err = dec.Decode(&dict)
-			_CheckErr("_UnpackBytes map[uint32]string", err)
-			return dict
-		case map[string][]byte:
-			var obj map[string][]byte
-			err = dec.Decode(&obj)
-			_CheckErr("_UnpackBytes map[string][]byte", err)
-			return obj
-
-		case map[string]uint64:
-			var obj map[string]uint64
-			err = dec.Decode(&obj)
-			_CheckErr("_UnpackBytes map[string]uint64", err)
-			return obj
-		case map[uint64][]uint8:
-			var obj map[uint64][]uint8
-			err = dec.Decode(&obj)
-			_CheckErr("_UnpackBytes map[uint64][]uint8", err)
-			return obj
+		db.keyPages[pid] = keyPage
+		return keyPage, nil
 	}
 
-	return nil
+	return db._GetKeyPageByPid(pid)
 }
 
-func _Pack2Bytes(obj interface{}) []byte {
-
-	var buf bytes.Buffer
-
-	enc := gob.NewEncoder(&buf)
-	err := enc.Encode(obj)
-	_CheckErr("_Pack2Bytes", err)
-
-	return buf.Bytes()
-}
