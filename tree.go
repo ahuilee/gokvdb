@@ -350,6 +350,11 @@ func (bt *BTreeBlobMap) _GetBranchKey(key int64) int64 {
 	return int64((key / 4096) * 4096)
 }
 
+const (
+	BTREE_NODE_DIR_LEFT = 0
+	BTREE_NODE_DIR_RIGHT = 1
+
+)
 
 func (bt *BTreeBlobMap) _InsertNode(key int64) *BTreeBlobMapNode {
 
@@ -363,7 +368,8 @@ func (bt *BTreeBlobMap) _InsertNode(key int64) *BTreeBlobMapNode {
 	rootNode := bt._GetRootNode()
 	node = rootNode
 
-	//var stack []*DBBTreeNode
+	var nodeStack []*BTreeBlobMapNode
+	var dirStack []byte
 
 	loopCount := 0
 
@@ -372,12 +378,13 @@ func (bt *BTreeBlobMap) _InsertNode(key int64) *BTreeBlobMapNode {
 
 		if node == nil {
 			node = bt._CreateNode(findKey)
-			if dir == 0 {
+			if dir == BTREE_NODE_DIR_LEFT {
 				parent.SetLeftNode(node)
 			} else {
 				parent.SetRightNode(node)
 			}
 
+			bt._DoBalance(nodeStack, dirStack)
 			//fmt.Println("_CreateNode", node.ToString())
 		}
 
@@ -388,16 +395,104 @@ func (bt *BTreeBlobMap) _InsertNode(key int64) *BTreeBlobMapNode {
 
 		parent = node
 
+		nodeStack = append(nodeStack, node)
+
 		if findKey < node.key {
 			node = node.GetLeftNode()
-			dir = 0
+			dir = BTREE_NODE_DIR_LEFT
 		} else {
 			node = node.GetRightNode()
-			dir = 1
+			dir = BTREE_NODE_DIR_RIGHT
+		}
+		dirStack = append(dirStack, dir)
+
+	}
+}
+
+
+func (bt* BTreeBlobMap) _DoBalance(nodeStack []*BTreeBlobMapNode, dirStack []byte) {
+
+	balanceCount := 0
+	for i:=len(nodeStack)-1; i>=0; i-- {
+		node := nodeStack[i]
+		leftHeight := bt._CalcHeight(node, BTREE_NODE_DIR_LEFT)
+		rightHeight := bt._CalcHeight(node, BTREE_NODE_DIR_RIGHT)
+		balance := rightHeight - leftHeight
+
+		//fmt.Printf("_DoBalance balance=%v leftHeight=%v rightHeight=%v\n", balance, leftHeight, rightHeight)
+
+		var newRoot *BTreeBlobMapNode
+		if balance < -1 {
+			newRoot = bt._RotateRight(node)
+			fmt.Println("_DoBalance _RotateRight", node.ToString())
+
+		} else if balance > 1 {
+			newRoot = bt._RotateLeft(node)
+			fmt.Println("_DoBalance _RotateLeft", node.ToString())
+		}
+
+		if newRoot != nil {
+			if i > 0 {
+				parent := nodeStack[i-1]
+				nodeDir := dirStack[i-1]
+				if nodeDir == BTREE_NODE_DIR_LEFT {
+					parent.SetLeftNode(newRoot)
+				} else {
+					parent.SetRightNode(newRoot)
+				}
+
+			} else {
+				bt._SetRootNode(newRoot)
+			}
+
+			bt.isChanged = true
+
+			balanceCount += 1
+			
+		}
+
+		if balanceCount >= 8 {
+			break
 		}
 
 	}
 }
+
+
+func (bt* BTreeBlobMap) _RotateLeft(node *BTreeBlobMapNode) *BTreeBlobMapNode {
+
+	nodeRight := node.GetRightNode()
+	node.SetRightNode(nodeRight.GetLeftNode())
+	nodeRight.SetLeftNode(node)
+
+	return nodeRight
+}
+
+func (bt* BTreeBlobMap) _RotateRight(node *BTreeBlobMapNode) *BTreeBlobMapNode {
+	nodeLeft := node.GetLeftNode()
+	node.SetLeftNode(nodeLeft.GetRightNode())
+	nodeLeft.SetRightNode(node)
+
+	return nodeLeft
+}
+
+func (bt* BTreeBlobMap) _CalcHeight(node *BTreeBlobMapNode, dir byte) int {
+	height := 0
+	for {
+		if node == nil {
+			break
+		}
+		height += 1
+		if dir == BTREE_NODE_DIR_LEFT {
+			node = node.GetLeftNode()
+		} else {
+			node = node.GetRightNode()
+		}
+	}
+
+	return height
+}
+
 
 func (bt *BTreeBlobMap) _CreateNodeId() uint32 {
 	nid := bt.lastNodeId + 1
@@ -497,9 +592,14 @@ func (bt* BTreeBlobMap) _GetNodeDataContext(pid uint32) *BTreeBlobMapNodeContext
 	return ctx
 }
 
+func (bt* BTreeBlobMap) _SetRootNode(node *BTreeBlobMapNode) {
+
+	bt.rootNodeId = node.id
+	bt.isChanged = true
+}
+
 func (bt *BTreeBlobMap) _GetRootNode() *BTreeBlobMapNode {
 	if bt.rootNodeId == 0 {
-
 		rootNode := bt._CreateNode(4096)
 		bt.rootNodeId = rootNode.id
 		return rootNode
@@ -561,3 +661,5 @@ func (n *BTreeBlobMapNode) GetOrCreateDataContext() *BTreeBlobMapNodeContext {
 
 	return dp
 }
+
+

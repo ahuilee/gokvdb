@@ -48,7 +48,7 @@ func TestTree(dbPath string, pageSize int, testCount int) {
 			tree.Set(key, data1)
 			testData[key] = data1
 
-			fmt.Printf("SET key=%v compareRtn=%v bytes=%v \n", key , len(data1))
+			fmt.Printf("SET key=%v bytes=%v \n", key , len(data1))
 
 		})
 
