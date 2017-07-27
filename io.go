@@ -1,10 +1,10 @@
 package gokvdb
 
 import (
-	"os"
+	//"os"
 	"fmt"
 	"bytes"
-	"encoding/binary"
+	//"encoding/binary"
 	"encoding/gob"
 )
 
@@ -15,7 +15,7 @@ type DBError struct {
 func (e DBError) Error() string {
 	return fmt.Sprintf("Error %s", e.message)
 }
-
+/*
 func _Dumps(obj interface{}) ([]byte, error) {
 	switch obj.(type) {
 		case *KeyPage:
@@ -31,8 +31,8 @@ func _Dumps(obj interface{}) ([]byte, error) {
 	}
 
 	return nil, DBError{message: "no support"}
-}
-
+}*/
+/*
 func _SplitPageMeta(data []byte) (PgMeta, []byte) {
 
 	buf := NewDataStreamFromBuffer(data)
@@ -41,8 +41,8 @@ func _SplitPageMeta(data []byte) (PgMeta, []byte) {
 	pgType := buf.ReadUInt8()
 
 	return PgMeta{pid:pid, pgType:pgType}, data[5:]
-}
-
+}*/
+/*
 func _Loads(data []byte, pid uint32, pgType uint8) (interface{}, error) {
 
 	pgMeta, dataBytes := _SplitPageMeta(data)	
@@ -152,90 +152,10 @@ func _Loads(data []byte, pid uint32, pgType uint8) (interface{}, error) {
 	}
 
 	return nil, DBError{message: "no support"}
-}
+}*/
 
 
-
-func _ReadHeader(f *os.File) *Header {
-
-	hdrBytes := make([]byte, HEADER_SIZE)
-	f.Seek(0, os.SEEK_SET)
-	_, err := f.Read(hdrBytes)
-	//fmt.Println("_ReadHeader", hdrBytes)
-	hdr := new(Header)	
-
-	if err != nil {
-		
-		return hdr
-	}
-
-	buf := NewDataStreamFromBuffer(hdrBytes)
-
-	var lastPageId uint32
-	var lastKeyId uint64
-	var lastBranchId uint64
-	var keyRootPageId uint32
-	var branchRootPageId uint32
-	var spaceListPageId uint32
-
-	lastPageId = buf.ReadUInt32()
-	lastKeyId = buf.ReadUInt64()
-	lastBranchId = buf.ReadUInt64()
-	keyRootPageId = buf.ReadUInt32()
-	branchRootPageId = buf.ReadUInt32()
-	spaceListPageId = buf.ReadUInt32()
-
-	hdr.lastPageId = lastPageId
-	hdr.lastKeyId = lastKeyId
-	hdr.lastBranchId = lastBranchId
-	hdr.keyRootPageId = keyRootPageId	
-	hdr.branchRootPageId = branchRootPageId	
-	hdr.spaceListPageId = spaceListPageId	
-
-	return hdr
-}
-
-func _PackHeader(hdr *Header, order binary.ByteOrder) []byte {
-	
-	buf := NewDataStreamFromBuffer(make([]byte, HEADER_SIZE))
-
-	buf.WriteUInt32(uint32(hdr.lastPageId))
-	buf.WriteUInt64(uint64(hdr.lastKeyId))
-	buf.WriteUInt64(uint64(hdr.lastBranchId))
-	buf.WriteUInt32(uint32(hdr.keyRootPageId))
-	buf.WriteUInt32(uint32(hdr.branchRootPageId))
-	buf.WriteUInt32(uint32(hdr.spaceListPageId))
-
-	//fmt.Println("_PackHeader hdr.keyRootPageId", hdr.keyRootPageId, hdr.valRootPageId)
-
-	return buf.ToBytes()
-}
-
-func _PackPageHeader(pageHeader PageHeader, order binary.ByteOrder) []byte {
-
-	buf := NewDataStreamFromBuffer(make([]byte, PAGE_HEADER_SIZE))
-	buf.WriteUInt32(uint32(pageHeader.pageId))
-	buf.WriteUInt32(uint32(pageHeader.payloadPageId))
-	buf.WriteUInt16(uint16(pageHeader.dataLen))
-
-	return buf.ToBytes()
-}
-
-func _LoadPageHeder(data []byte) PageHeader {
-
-	var pageId uint32
-	var payloadPageId uint32
-	var dataLen uint16
-
-	buf := NewDataStreamFromBuffer(data)
-
-	pageId = buf.ReadUInt32()
-	payloadPageId = buf.ReadUInt32()
-	dataLen = buf.ReadUInt16()
-
-	return PageHeader{pageId: pageId, payloadPageId: payloadPageId, dataLen: dataLen}
-}
-
+/*
 func _PackValPage(p *ValPage) []byte {
 	w := NewDataStream()
 	w.Write(_PackPgMeta(PgMeta{pid:p.pid, pgType: PGTYPE_VAL_PAGE}))
@@ -316,7 +236,7 @@ func _PackPgMeta(m PgMeta) []byte {
 	buf.WriteUInt8(m.pgType)
 
 	return buf.ToBytes()
-}
+}*/
 
 func _Pack2Bytes(obj interface{}) []byte {
 
@@ -328,7 +248,7 @@ func _Pack2Bytes(obj interface{}) []byte {
 
 	return buf.Bytes()
 }
-
+/*
 func _UnpackBytes(data []byte, unpackType interface{}) interface{} {
 
 	//fmt.Println("_UnpackBytes unpackType", unpackType)
@@ -381,7 +301,7 @@ func _UnpackBytes(data []byte, unpackType interface{}) interface{} {
 	}
 
 	return nil
-}
+}*/
 
 type DataStream struct {
 	buf []byte
@@ -457,44 +377,37 @@ func (ds *DataStream) ReadUInt8() uint8 {
 func (ds *DataStream) ReadUInt16() uint16 {
 
 	var value uint16
-	value = uint16(ds.buf[ds.offset]) | uint16(ds.buf[ds.offset+1])<<8
-	ds.offset += 2
+	data := ds.Read(2)
+	value = uint16(data[0]) | uint16(data[1])<<8
+
 
 	return value
 }
 
 func (ds *DataStream) ReadUInt24() uint32 {
-
 	var value uint32
-	value = uint32(ds.buf[ds.offset]) | uint32(ds.buf[ds.offset+1])<<8 | uint32(ds.buf[ds.offset+2])<<16
-	ds.offset += 3
-
+	data := ds.Read(3)
+	value = uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16
 	return value
 }
-
 
 func (ds *DataStream) ReadUInt32() uint32 {
-
 	var value uint32
-	value = uint32(ds.buf[ds.offset]) | uint32(ds.buf[ds.offset+1])<<8 | uint32(ds.buf[ds.offset+2])<<16 | uint32(ds.buf[ds.offset+3])<<24
-
-	ds.offset += 4
+	data := ds.Read(4)
+	//fmt.Println("ReadUInt32", data)
+	value = uint32(data[0]) | uint32(data[1]) << 8  | uint32(data[2]) << 16 | uint32(data[3]) << 24
 
 	return value
 }
-
 
 func (ds *DataStream) ReadUInt64() uint64 {
 
 	var value uint64
-	value = uint64(ds.buf[ds.offset]) | uint64(ds.buf[ds.offset+1])<<8 | uint64(ds.buf[ds.offset+2])<<16 | uint64(ds.buf[ds.offset+3])<<24 | uint64(ds.buf[ds.offset+4])<<32 | uint64(ds.buf[ds.offset+5])<<40 | uint64(ds.buf[ds.offset+6])<<48 | uint64(ds.buf[ds.offset+7])<<56
-
-	ds.offset += 8
+	data := ds.Read(8)
+	value = uint64(data[0]) | uint64(data[1])<<8 | uint64(data[2])<<16 | uint64(data[3])<<24 | uint64(data[4])<<32 | uint64(data[5])<<40 | uint64(data[6])<<48 | uint64(data[7])<<56
 
 	return value
 }
-
-
 
 func (ds *DataStream) _CheckSize(size int) {	
 
@@ -544,40 +457,70 @@ func (ds *DataStream) WriteUInt8(value uint8) {
 }
 
 func (ds *DataStream) WriteUInt16(value uint16) {
-	ds._CheckSize(2)
-	ds.buf[ds.offset] = byte(value)
-	ds.buf[ds.offset+1] = byte(value >> 8)	
-	ds.offset += 2
+	data := make([]byte, 2)
+	data[0] = byte(value)
+	data[1] = byte(value >> 8)
+	ds.Write(data)
 }
 
 func (ds *DataStream) WriteUInt24(value uint32) {
-	ds._CheckSize(3)
-	ds.buf[ds.offset] = byte(value)
-	ds.buf[ds.offset+1] = byte(value >> 8)
-	ds.buf[ds.offset+2] = byte(value >> 16)	
-	ds.offset += 3
+	
+	data := make([]byte, 3)
+	data[0] = byte(value)
+	data[1] = byte(value >> 8)
+	data[2] = byte(value >> 16)	
+	ds.Write(data)
 }
 
-func (ds *DataStream) WriteUInt32(value uint32) {
-	ds._CheckSize(4)
-	ds.buf[ds.offset] = byte(value)
-	ds.buf[ds.offset+1] = byte(value >> 8)
-	ds.buf[ds.offset+2] = byte(value >> 16)
-	ds.buf[ds.offset+3] = byte(value >> 24)
 
-	ds.offset += 4
+func (ds *DataStream) WriteUInt32(value uint32) {
+	data := make([]byte, 4)
+
+	data[0] = byte(value)
+	data[1] = byte(value >> 8)
+	data[2] = byte(value >> 16)
+	data[3] = byte(value >> 24)
+
+	//fmt.Println("WriteUInt32", data)
+
+	ds.Write(data)
 }
 
 func (ds *DataStream) WriteUInt64(value uint64) {
-	ds._CheckSize(8)
-	ds.buf[ds.offset] = byte(value)
-	ds.buf[ds.offset+1] = byte(value >> 8)
-	ds.buf[ds.offset+2] = byte(value >> 16)
-	ds.buf[ds.offset+3] = byte(value >> 24)
-	ds.buf[ds.offset+4] = byte(value >> 32)
-	ds.buf[ds.offset+5] = byte(value >> 40)
-	ds.buf[ds.offset+6] = byte(value >> 48)
-	ds.buf[ds.offset+7] = byte(value >> 56)
-	
-	ds.offset += 8
+
+	data := make([]byte, 8)
+
+	data[0] = byte(value)
+	data[1] = byte(value >> 8)
+	data[2] = byte(value >> 16)
+	data[3] = byte(value >> 24)
+	data[4] = byte(value >> 32)
+	data[5] = byte(value >> 40)
+	data[6] = byte(value >> 48)
+	data[7] = byte(value >> 56)
+
+	ds.Write(data)
+}
+
+func (ds *DataStream) WriteHStr(value string) {
+	data := []byte(value)
+	if len(data) > 65536 {
+		data = data[:65536] 
+	}
+
+	dataLen := uint16(len(data))
+	ds.WriteUInt16(dataLen)
+	ds.Write(data)
+
+	//fmt.Println("WriteHStr", dataLen, data, value)
+}
+
+func (ds *DataStream) ReadHStr() string {
+
+	dataLen := ds.ReadUInt16()
+	data := ds.Read(int(dataLen))
+
+	//fmt.Println("ReadHStr", dataLen, data)
+
+	return string(data)
 }

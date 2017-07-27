@@ -1,3 +1,4 @@
 *.swp
 tests/*.exe
 tests/testdata/
+tests/log_paylog.txt
