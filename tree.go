@@ -3,6 +3,7 @@ package gokvdb
 import (
 	"os"
 	"fmt"
+	"sync"
 )
 
 type BTreeBlobMap struct {
@@ -19,6 +20,7 @@ type BTreeBlobMap struct {
 	//pageContexts map[uint32]*BTreeInternalPageContext
 
 	isChanged bool
+	rwlock sync.Mutex
 }
 
 type BTreeBlobMapNode struct {
@@ -216,6 +218,8 @@ func (i *BTreeBlobMapItem) Key() int64 {
 }
 
 func (i *BTreeBlobMapItem) Value() []byte {
+	i.bt.rwlock.Lock()
+	defer i.bt.rwlock.Unlock()
 	data, err := i.bt.pager.ReadPayloadData(i.pid)
 	_CheckErr("DBBTree Items", err)
 	return data
@@ -248,10 +252,11 @@ func (m *BTreeBlobMap) Items() chan BTreeBlobMapItem {
 
 		fmt.Println("Items Done nodesCount", nodesCount)
 
-		close(q)
+		close(ch)
 	} (q)
 
-	return q}
+	return q
+}
 
 
 func (bt *BTreeBlobMap) _Nodes() chan *BTreeBlobMapNode {
@@ -560,6 +565,8 @@ func (bt* BTreeBlobMap) _GetNodeDataContext(pid uint32) *BTreeBlobMapNodeContext
 	ctx, ok := bt.nodeDataContexts[pid]
 
 	if !ok {
+		bt.rwlock.Lock()
+		defer bt.rwlock.Unlock()
 		ctx = bt._NewNodeDataContext(pid)
 
 		pageIdByKey := make(map[int64]uint32)
