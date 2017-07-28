@@ -1,6 +1,6 @@
 gokvdb
 
-練習 golang 寫的 嵌入式 Key-Value 資料庫
+練習用 golang 開發 嵌入式 Key-Value 資料庫
 
 Installation
 

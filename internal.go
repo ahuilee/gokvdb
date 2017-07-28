@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+const (
+	INTERNAL_PAGER_META_SIZE = 24
+
+)
+
 type InternalPager struct {
 
 	pageSize uint16
@@ -42,7 +47,7 @@ func NewInternalPager(pager IPager, pageSize uint16, meta []byte) IPager {
 	ip.contextByPageId = make(map[uint32]*InternalDataContext)
 	ip.isChanged = false
 
-	if meta != nil && len(meta) > 16 {
+	if meta != nil && len(meta) >= INTERNAL_PAGER_META_SIZE {
 
 		metaR := NewDataStreamFromBuffer(meta)
 		ip.pageSize = metaR.ReadUInt16()
@@ -294,7 +299,7 @@ func (p *InternalPager) Save() []byte {
 		p.isChanged = false
 	}
 
-	metaW := NewDataStream()
+	metaW := NewDataStreamFromBuffer(make([]byte, INTERNAL_PAGER_META_SIZE))
 	
 	metaW.WriteUInt16(p.pageSize)
 	metaW.WriteUInt32(p.lastPageId)

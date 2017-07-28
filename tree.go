@@ -59,7 +59,7 @@ func NewBTreeBlobMap(pager IPager, meta []byte) *BTreeBlobMap {
 
 	var nodeContextPageId uint32
 
-	if meta != nil && len(meta) > 16 {
+	if meta != nil && len(meta) >= 16 {
 
 		metaR := NewDataStreamFromBuffer(meta)
 
@@ -239,11 +239,10 @@ func (m *BTreeBlobMap) Items() chan BTreeBlobMapItem {
 
 			if ctx != nil {
 				//fmt.Println("Items ctx", node.ToString(), len(ctx.pageIdByKey))
-				/*
 				for key, pgId := range ctx.pageIdByKey {			
-					item := BTreeInternalItem{key: key, bt: bt, pid: pgId}
+					item := BTreeBlobMapItem{key: key, bt: m, pid: pgId}
 					ch <- item
-				}*/
+				}
 			}
 		}
 

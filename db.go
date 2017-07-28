@@ -42,6 +42,7 @@ type DBItem struct {
 
 type DBContext struct {	
 	name string
+	pageIdByMetaName map[string]uint32
 	dbSets map[string]*DBSet
 	pager IPager
 }
@@ -235,7 +236,7 @@ func (ctx *DBContext) Save() []byte {
 
 	rootW := NewDataStream()
 	
-	rootW.WriteUInt24(uint32(len(ctx.dbSets)))
+	rootW.WriteUInt32(uint32(len(ctx.dbSets)))
 
 	pager := ctx.pager
 
@@ -260,19 +261,49 @@ func (ctx *DBContext) Save() []byte {
 		rootW.WriteHStr(dset.name)
 	}
 
+	rootW.WriteUInt32(uint32(len(ctx.pageIdByMetaName)))
+
+	for metaName, pgId := range ctx.pageIdByMetaName {
+		rootW.WriteHStr(metaName)
+		rootW.WriteUInt32(pgId)
+	}
+
 	return rootW.ToBytes()
 }
 
+func (ctx *DBContext) GetMeta(name string) ([]byte, bool) {
+
+	pid, ok := ctx.pageIdByMetaName[name]
+	if ok {
+		data, err := ctx.pager.ReadPayloadData(pid)
+		if err == nil {
+			return data, true
+		}
+	}
+
+	return nil, false
+}
+
+func (ctx *DBContext) SetMeta(name string, data []byte) {
+
+	pid, ok := ctx.pageIdByMetaName[name]
+	if !ok {
+		pid = ctx.pager.CreatePageId()
+		ctx.pageIdByMetaName[name] = pid
+	}
+	ctx.pager.WritePayloadData(pid, data)
+}
 
 func _OpenDBContext(name string, pager IPager, meta []byte) (*DBContext, error) {
 	ctx := new(DBContext)
 	ctx.name = name
 	ctx.pager = pager
 	ctx.dbSets = make(map[string]*DBSet)
+	ctx.pageIdByMetaName = make(map[string]uint32)
 
 	rootR := NewDataStreamFromBuffer(meta)
 
-	itemCount := rootR.ReadUInt24()
+	itemCount := rootR.ReadUInt32()
 
 	var i uint32
 	var dsetType uint8
@@ -291,6 +322,15 @@ func _OpenDBContext(name string, pager IPager, meta []byte) (*DBContext, error) 
 
 		ctx.dbSets[dset.name] = dset
 		//fmt.Println("LOAD DSet", dset.ToString())
+	}
+
+	metaCount := rootR.ReadUInt32()
+
+	for i=0 ; i<metaCount; i++ {
+		metaName := rootR.ReadHStr()
+		metaPid := rootR.ReadUInt32()
+
+		ctx.pageIdByMetaName[metaName] = metaPid
 	}
 
 	
@@ -357,7 +397,7 @@ func _NewBTreeIndex(internalPager IPager, btMap *BTreeBlobMap) *BTreeIndex {
 
 func (s *DBContext) OpenBTree(name string) (*BTreeIndex, error) {
 
-	internalPageSize := uint16(128)
+	internalPageSize := uint16(96)
 
 	dset, ok := s.dbSets[name]
 	if !ok {
