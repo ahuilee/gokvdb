@@ -5,6 +5,7 @@ import (
 	"os"
 	"fmt"
 	"hash/fnv"
+	"sync"
 )
 
 const (
@@ -23,6 +24,7 @@ type LazyStrI64Dict struct {
 	storage *Storage
 	//bt *BTreeIndex
 	splitCount int
+	rwlock sync.Mutex
 }
 
 type LazyStrI64Context struct {
@@ -143,6 +145,9 @@ func (d *LazyStrI64Dict) _GetDB() *DBContext {
 
 func (d *LazyStrI64Dict) Save() {
 
+	d.rwlock.Lock()
+	defer d.rwlock.Unlock()
+
 
 
 	for ctxId, ctx := range d.contextById {
@@ -222,8 +227,15 @@ func (d *LazyStrI64Dict) _GetContextById(id uint32) *LazyStrI64Context {
 		if ok {
 			//bt := d._GetBt()
 			//data, ok := bt.Get(int64(id))
+			d.rwlock.Lock()
+			defer d.rwlock.Unlock()
 			data, err := d.storage.pager.ReadPayloadData(pid)
-			if err == nil {
+			if err != nil {
+				fmt.Println("error", err)
+				os.Exit(1)
+			}
+
+			
 				rd := NewDataStreamFromBuffer(data)
 
 				ctxType := rd.ReadUInt8()
@@ -255,7 +267,7 @@ func (d *LazyStrI64Dict) _GetContextById(id uint32) *LazyStrI64Context {
 				}
 
 				d.contextById[id] = ctx
-			}
+			
 		}
 	}
 
@@ -278,6 +290,9 @@ func (d *LazyStrI64Dict) _NewContext(id uint32, pid uint32, ctxType byte, depth 
 }
 
 func (d *LazyStrI64Dict) _CreateContext(ctxType byte, depth byte) *LazyStrI64Context {
+	d.rwlock.Lock()
+	defer d.rwlock.Unlock()
+
 	id := d.lastContextId + 1
 	d.lastContextId = id
 
