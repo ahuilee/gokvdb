@@ -15,7 +15,7 @@ import (
 
 func main() {
 
-	for i:=0; i<32767; i++ {
+	for i:=0; i<1024; i++ {
 		TestPayload()
 	}
 
@@ -33,26 +33,26 @@ func TestPayload() {
 	testData := make(map[uint32][]byte)
 
 
-	for i:=0; i<16; i++ {
+	for i:=0; i<32; i++ {
 
 		var pids []uint32
 
-		for j :=0; j<16; j++ {
+		for j :=0; j<32; j++ {
 		
 
 			testutils.OpenStreamPager(fp, pageSize, metaOffset, "w", func(pager gokvdb.IPager) {
 				pid := pager.CreatePageId()
 				pids = append(pids, pid)
 				
-				fmt.Println("CreatePageId", pid)
+				fmt.Println("[test] CreatePageId", pid)
 			})
 		}
 
-		for j:=0; j<16; j++ {
+		for j:=0; j<8; j++ {
 
 			for _, pid := range pids {
 
-				data := testutils.RandBytes(rand.Intn(65535) + 1)
+				data := testutils.RandBytes(rand.Intn(262144) + 1)
 				testutils.OpenStreamPager(fp, pageSize, metaOffset, "w", func(pager gokvdb.IPager) {
 					//data := testutils.RandBytes(8000)
 					pager.WritePayloadData(pid, data)
@@ -67,7 +67,7 @@ func TestPayload() {
 
 					compareRtn := bytes.Compare(data, data2)
 
-					fmt.Println("............pid=", pid, "compareRtn", compareRtn)
+					fmt.Println("[PayloadTest]............pid=", pid, "compareRtn", compareRtn)
 					if compareRtn != 0 {
 						os.Exit(1)
 					}

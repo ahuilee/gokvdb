@@ -22,7 +22,8 @@ type LazyStrI64Dict struct {
 	pageIdByContextId map[uint32]uint32
 	contextById map[uint32]*LazyStrI64Context
 	storage *Storage
-	//bt *BTreeIndex
+	internalPager IPager
+	
 	splitCount int
 	rwlock sync.Mutex
 }
@@ -51,6 +52,7 @@ func NewStrI64Dict(s *Storage, dbName string, dictName string) *LazyStrI64Dict {
 	
 	var lastContextId uint32
 	var rootContextId uint32
+	var internalPagerMeta []byte
 
 	db, err := s.DB(dbName)
 	if err != nil {
@@ -66,21 +68,26 @@ func NewStrI64Dict(s *Storage, dbName string, dictName string) *LazyStrI64Dict {
 		lastContextId = rd.ReadUInt32()
 		rootContextId = rd.ReadUInt32()
 
+		internalPagerMeta = rd.ReadChunk()
+
 		rowsCont := int(rd.ReadUInt32())
 
 		for i:=0; i<rowsCont; i++ {
 			ctxId := rd.ReadUInt32()
 			pgId := rd.ReadUInt32()
-			dict.pageIdByContextId[ctxId] = pgId
-	
-			fmt.Println("NewStrI64Dict LOAD item", "ctxId", ctxId, "pid", pgId)
-
+			dict.pageIdByContextId[ctxId] = pgId	
+			//fmt.Println("NewStrI64Dict LOAD item", "ctxId", ctxId, "pid", pgId)
 		}
 
 	}
 
 	dict.lastContextId = lastContextId
 	dict.rootContextId = rootContextId
+
+	internalPageSize := uint16(128)
+
+	internalPager := NewInternalPager(s.pager, internalPageSize, internalPagerMeta)
+	dict.internalPager = internalPager
 
 	fmt.Println("NewStrI64Dict", dict.ToString())
 
@@ -127,6 +134,7 @@ func (d *LazyStrI64Dict) Set(key string, value int64) {
 
 func (d *LazyStrI64Dict) Get(key string) (int64, bool) {
 	root := d._GetRoot()
+	
 	val, ok := root.Get(key)
 	return val, ok
 }
@@ -148,9 +156,7 @@ func (d *LazyStrI64Dict) Save() {
 	d.rwlock.Lock()
 	defer d.rwlock.Unlock()
 
-
-
-	for ctxId, ctx := range d.contextById {
+	for _, ctx := range d.contextById {
 		if ctx.isChanged {
 			//
 			ctx.isChanged = false
@@ -180,9 +186,9 @@ func (d *LazyStrI64Dict) Save() {
 			ctxData := w.ToBytes()
 
 			//bt.Set(int64(ctxId), ctxData)
-			d.storage.pager.WritePayloadData(ctx.pid, ctxData)
+			d.internalPager.WritePayloadData(ctx.pid, ctxData)
 
-			fmt.Println("LazyStrI64Dict SAVE ctxId=", ctxId, "bytes", len(ctxData), "rows", len( ctx.valueByKey))
+			//fmt.Println("LazyStrI64Dict SAVE ctxId=", ctxId, "bytes", len(ctxData), "rows", len( ctx.valueByKey))
 		}
 	}
 
@@ -192,6 +198,9 @@ func (d *LazyStrI64Dict) Save() {
 
 	metaW.WriteUInt32(d.lastContextId) 
 	metaW.WriteUInt32(d.rootContextId) 
+
+	internalPagerMeta := d.internalPager.Save()
+	metaW.WriteChunk(internalPagerMeta)
 
 	metaW.WriteUInt32(uint32(len(d.pageIdByContextId)))
 
@@ -224,51 +233,53 @@ func (d *LazyStrI64Dict) _GetContextById(id uint32) *LazyStrI64Context {
 
 	if !ok {
 		pid, ok := d.pageIdByContextId[id]
-		if ok {
-			//bt := d._GetBt()
-			//data, ok := bt.Get(int64(id))
-			d.rwlock.Lock()
-			defer d.rwlock.Unlock()
-			data, err := d.storage.pager.ReadPayloadData(pid)
-			if err != nil {
-				fmt.Println("error", err)
-				os.Exit(1)
+		if !ok {
+			fmt.Printf("[ERROR] no contextId=%v pid=%v\n", id, pid)
+			os.Exit(1)
+		}
+		
+		d.rwlock.Lock()
+		defer d.rwlock.Unlock()
+		data, err := d.internalPager.ReadPayloadData(pid)
+		if err != nil {
+			fmt.Println("error", err)
+			os.Exit(1)
+		}
+
+		
+		rd := NewDataStreamFromBuffer(data)
+
+		ctxType := rd.ReadUInt8()
+		depth := rd.ReadUInt8()
+
+		ctx = d._NewContext(id, pid, ctxType, depth)	
+
+		var rowsCount int
+		rowsCount = int(rd.ReadUInt16())
+
+		//fmt.Println("_GetContext", ctx.ToString(), "rowsCount", rowsCount)
+
+		switch ctx.ctxType {
+		case LAZYSTRI64_DATA:
+
+			for i:=0; i<rowsCount; i++ {
+				k := rd.ReadHStr()
+				v := int64(rd.ReadUInt64())
+				ctx.valueByKey[k] = v
 			}
 
-			
-				rd := NewDataStreamFromBuffer(data)
+		case LAZYSTRI64_BRANCH:
 
-				ctxType := rd.ReadUInt8()
-				depth := rd.ReadUInt8()
-
-				ctx = d._NewContext(id, pid, ctxType, depth)	
-
-				var rowsCount int
-				rowsCount = int(rd.ReadUInt16())
-
-				fmt.Println("_GetContext", ctx.ToString(), "rowsCount", rowsCount)
-
-				switch ctx.ctxType {
-				case LAZYSTRI64_DATA:
-
-					for i:=0; i<rowsCount; i++ {
-						k := rd.ReadHStr()
-						v := int64(rd.ReadUInt64())
-						ctx.valueByKey[k] = v
-					}
-
-				case LAZYSTRI64_BRANCH:
-
-					for i:=0; i<rowsCount; i++ {
-						k := int32(rd.ReadUInt32())
-						v := rd.ReadUInt32()
-						ctx.childContextIdByBranchKey[k] = v
-					}
-				}
-
-				d.contextById[id] = ctx
-			
+			for i:=0; i<rowsCount; i++ {
+				k := int32(rd.ReadUInt32())
+				v := rd.ReadUInt32()
+				ctx.childContextIdByBranchKey[k] = v
+			}
 		}
+
+		d.contextById[id] = ctx
+			
+		
 	}
 
 	return ctx
@@ -296,12 +307,11 @@ func (d *LazyStrI64Dict) _CreateContext(ctxType byte, depth byte) *LazyStrI64Con
 	id := d.lastContextId + 1
 	d.lastContextId = id
 
-	pid := d.storage.pager.CreatePageId()
+	pid := d.internalPager.CreatePageId()
 
 	ctx := d._NewContext(id, pid, ctxType, depth)	
 	ctx.isChanged = false
 	d.pageIdByContextId[id] = pid
-
 	d.contextById[id] = ctx
 
 	return ctx
@@ -411,7 +421,7 @@ func (c *LazyStrI64Context) Set(key string, value int64) {
 	c.valueByKey[key] = value
 	c.isChanged = true
 
-	if c.dict.splitCount < 16 {
+	if c.dict.splitCount < 8 {
 		if c.depth < 2 && len(c.valueByKey) > 8192 {
 			c.ctxType = LAZYSTRI64_BRANCH
 

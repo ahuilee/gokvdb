@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"bytes"
 	"time"
+	"strings"
 	"math/rand"
 	"../../gokvdb"
 	"../testutils"
@@ -43,17 +44,31 @@ func TestInternalPager_Payload(dbPath string) {
 			pid = pager.CreatePageId()
 		})
 
-		for j:=0; j<2; j++ {
+		for j:=0; j<1; j++ {
 
 			testutils.OpenInternalPager(dbPath, 4096, 0, "w", func(pager gokvdb.IPager) {
+				fmt.Println(strings.Repeat("-", 50))
 
 				pageData1 = testutils.RandBytes(rand.Intn(65535) + 65535)
 
 				testData[pid] = pageData1
 
+				fmt.Println("[TestInternalPager] WritePayloadData Large pid", pid, "bytes", len(pageData1))
 				pager.WritePayloadData(pid, pageData1)
 
-				fmt.Println("[TestInternalPager] WritePayloadData pid", pid, "bytes", len(pageData1))
+			})
+
+			testutils.OpenInternalPager(dbPath, 4096, 0, "w", func(pager gokvdb.IPager) {
+
+				fmt.Println(strings.Repeat("-", 50))
+
+				pageData2 := testutils.RandBytes(rand.Intn(1024) + 1)
+
+				testData[pid] = pageData2
+
+				fmt.Println("[TestInternalPager] WritePayloadData Small pid", pid, "bytes", len(pageData2))
+				pager.WritePayloadData(pid, pageData2)
+
 			})
 
 			testutils.OpenInternalPager(dbPath, 4096, 0, "r", func(pager gokvdb.IPager) {

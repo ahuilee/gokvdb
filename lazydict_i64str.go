@@ -226,7 +226,7 @@ func (d *LazyI64StrDict) Save() {
 
 			ctx.isChanged = false
 			//isChanged = true
-			fmt.Println("Save btKey=", btKey, "bytes", len(ctxData))
+			//fmt.Println("Save btKey=", btKey, "bytes", len(ctxData))
 		}
 	}
 

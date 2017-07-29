@@ -4,7 +4,7 @@ import (
 	"os"
 	"fmt"
 	//"sync"
-	//"path/filepath"
+	"path/filepath"
 )
 
 
@@ -15,3 +15,13 @@ func _CheckErr(message string, err error) {
 	}
 }
 
+func _CheckCreateDirpath(fullpath string) {
+
+	dirpath := filepath.Dir(fullpath)
+	_, err := os.Stat(dirpath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			os.MkdirAll(dirpath, os.ModePerm)
+		}
+	}
+}

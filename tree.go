@@ -428,11 +428,11 @@ func (bt* BTreeBlobMap) _DoBalance(nodeStack []*BTreeBlobMapNode, dirStack []byt
 		var newRoot *BTreeBlobMapNode
 		if balance < -1 {
 			newRoot = bt._RotateRight(node)
-			fmt.Println("_DoBalance _RotateRight", node.ToString())
+			//fmt.Println("_DoBalance _RotateRight", node.ToString())
 
 		} else if balance > 1 {
 			newRoot = bt._RotateLeft(node)
-			fmt.Println("_DoBalance _RotateLeft", node.ToString())
+			//fmt.Println("_DoBalance _RotateLeft", node.ToString())
 		}
 
 		if newRoot != nil {

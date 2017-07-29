@@ -5,9 +5,13 @@ import (
 	"fmt"
 	//"time"
 	//"bytes"
+	"bufio"
+	"strconv"
+	"strings"
 	"math/rand"
-	"../../gokvdb"
-	//"github.com/satori/go.uuid"	
+	"path/filepath"
+	"../../gokvdb"	
+	"github.com/satori/go.uuid"	
 )
 
 func CheckErr(err error) {
@@ -16,6 +20,147 @@ func CheckErr(err error) {
 		os.Exit(1)
 	}
 }
+
+
+
+func CreateTempFilePath() string {
+
+	path :=  fmt.Sprintf("./testdata/%v.tmp", uuid.NewV4())
+
+	fullpath, _ := filepath.Abs(path)
+
+	dirPath := filepath.Dir(fullpath)
+	_, err := os.Stat(dirPath) 
+	if err != nil {
+		if os.IsNotExist(err) {
+			os.MkdirAll(dirPath, os.ModePerm)
+		}
+	}
+
+	
+
+	f, _ := os.OpenFile(path, os.O_CREATE, 0666)
+	defer f.Close()
+
+	return path
+}
+
+func RandomI64StrItems(count int, logPath string ) chan []interface{} {
+	
+	q := make(chan []interface{})
+
+	go func(ch chan []interface{}, logPath string) {
+
+		f, _ := os.OpenFile(logPath, os.O_RDWR | os.O_APPEND, 0666)
+		defer f.Close()
+
+		for i:=0; i<count; i++ {
+			key := rand.Int63n(72057594037927936)
+			val := fmt.Sprintf("key-%v", uuid.NewV4())
+
+			item := []interface{}{key, val}
+			ch <- item
+
+			f.WriteString(fmt.Sprintf("%v\t%v\n", key, val))
+		}
+
+		f.Sync()
+
+		close(ch)
+	}(q, logPath)
+
+	return q
+}
+
+func RandomStrI64Items(count int, logPath string ) chan []interface{} {
+	
+	q := make(chan []interface{})
+
+	go func(ch chan []interface{}, logPath string) {
+
+		f, _ := os.OpenFile(logPath, os.O_RDWR | os.O_APPEND, 0666)
+		defer f.Close()
+
+		for i:=0; i<count; i++ {
+			key := fmt.Sprintf("key-%v", uuid.NewV4())
+			val := rand.Int63n(72057594037927936)
+
+			item := []interface{}{key, val}
+			ch <- item
+
+			f.WriteString(fmt.Sprintf("%v\t%v\n", key, val))
+		}
+
+		f.Sync()
+
+		close(ch)
+	}(q, logPath)
+
+	return q
+}
+
+
+func TakeI64StrItems(logPath string) chan []interface{} {
+
+
+	q := make(chan []interface{})
+
+	go func(ch chan []interface{}, logPath string) {
+		f, _ := os.OpenFile(logPath, os.O_RDWR, 0666)
+		defer f.Close()
+
+		fmt.Println("TakeItems", logPath)
+
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			parts := strings.Split(line, "\t")
+			//fmt.Println("line", parts)
+			key, _ := strconv.ParseInt(parts[0], 10, 64)
+			item := []interface{}{int64(key), parts[1]}
+
+			ch <- item
+
+		}
+
+		close(ch)
+
+	} (q, logPath)
+
+	return q
+}
+
+func TakeStrI64Items(logPath string) chan []interface{} {
+
+
+	q := make(chan []interface{})
+
+	go func(ch chan []interface{}, logPath string) {
+		f, _ := os.OpenFile(logPath, os.O_RDWR, 0666)
+		defer f.Close()
+
+		fmt.Println("TakeItems", logPath)
+
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			parts := strings.Split(line, "\t")
+			//fmt.Println("line", parts)
+			value, _ := strconv.ParseInt(parts[1], 10, 64)
+			item := []interface{}{parts[0], int64(value)}
+
+			ch <- item
+
+		}
+
+		close(ch)
+
+	} (q, logPath)
+
+	return q
+}
+
+
 
 
 func OpenStorage(path string, callback func(s *gokvdb.Storage)) {

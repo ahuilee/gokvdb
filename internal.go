@@ -6,6 +6,7 @@ import (
 )
 
 const (
+	INTERNAL_PAGE_HEADER_SIZE int = 16
 	INTERNAL_PAGER_META_SIZE = 24
 
 )
@@ -15,7 +16,9 @@ type InternalPager struct {
 	pageSize uint16
 	lastPageId uint32
 	rootPageId uint32
+	freelistPageId uint32
 	pager IPager	
+	freelist *FreePageList
 	root map[uint32]uint32
 	branchPages map[uint32]*InternalBranchPage
 	contextByPageId map[uint32]*InternalDataContext
@@ -43,9 +46,12 @@ func NewInternalPager(pager IPager, pageSize uint16, meta []byte) IPager {
 	ip.pageSize = pageSize
 	ip.lastPageId = 0
 	ip.rootPageId = 0
+	ip.freelistPageId = 0
 	ip.branchPages = make(map[uint32]*InternalBranchPage)
 	ip.contextByPageId = make(map[uint32]*InternalDataContext)
 	ip.isChanged = false
+
+	
 
 	if meta != nil && len(meta) >= INTERNAL_PAGER_META_SIZE {
 
@@ -53,6 +59,9 @@ func NewInternalPager(pager IPager, pageSize uint16, meta []byte) IPager {
 		ip.pageSize = metaR.ReadUInt16()
 		ip.lastPageId = metaR.ReadUInt32()
 		ip.rootPageId = metaR.ReadUInt32()
+		ip.freelistPageId = metaR.ReadUInt32()
+
+		//fmt.Println("NewInternalPager.freelistPageId=", ip.freelistPageId)
 
 	}
 
@@ -78,12 +87,18 @@ func NewInternalPager(pager IPager, pageSize uint16, meta []byte) IPager {
 
 				//fmt.Println("ROOT ITEM", "branchRootKey=", branchRootKey, "branchPageId=", branchPageId)			
 			}
-
 			//fmt.Println("INTERNAL ROOT", len(ip.root))
 		}
 	}
+
 	
+
+	freelist := _NewFreePageList(pager, ip.freelistPageId, false)
+	ip.freelist = freelist
+	ip.freelistPageId = freelist.rootPageId
 	ip.payloadFactory = NewPayloadPageFactory(ip)
+	ip.payloadFactory.isDebug = false
+
 
 	return ip
 }
@@ -93,10 +108,28 @@ func (p *InternalPager) ToString() string {
 }
 
 func (p *InternalPager) CreatePageId() uint32 {
+	
+	freeId, ok := p.freelist.Pop()
+	if ok {
+		//fmt.Println(">> InternalPager CreatePageId Free", freeId)
+		return freeId
+	}
+
+	//fmt.Println("InternalPager CreatePageId New")
 	pid := p.lastPageId + 1
 	p.lastPageId = pid
 
 	return pid
+}
+
+func (p *InternalPager) FreePageId(pid uint32) {
+
+	//fmt.Println(">>>>>>> InternalPager FreePageId", pid)
+
+	empty := make([]byte, INTERNAL_PAGE_HEADER_SIZE)
+
+	p.WritePage(pid, empty)
+	p.freelist.Put(pid)
 }
 
 func (p *InternalPager) GetPageSize() int {
@@ -111,6 +144,7 @@ func (p *InternalPager) _GetBranchKeys(pid uint32) (uint32, uint32) {
 }
 
 func (p *InternalPager) WritePayloadData(pid uint32, data []byte) {
+	//fmt.Println("InternalPager WritePayloadData", pid)
 	p.payloadFactory.WritePayloadData(pid, data)
 }
 
@@ -141,7 +175,13 @@ func (p *InternalPager) ReadPage(pid uint32, count int) ([]byte, error) {
 
 			data, ok := context.dataByPageId[pid]
 			if ok {
-				return data, nil
+				_count := count
+				if _count < 1 {
+					_count = int(p.pageSize)
+				}
+				output := make([]byte, _count)
+				copy(output, data)
+				return output, nil
 			}
 		}
 		
@@ -239,8 +279,9 @@ func (p *InternalPager) _GetBranchPageByPageId(pid uint32) *InternalBranchPage {
 
 func (p *InternalPager) Save() []byte {
 
-	//fmt.Println(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>*********************")
+	p.freelist.Save()
 
+	fmt.Println("[InternalPager SAVE] freelist", len(p.freelist.pageIdSet))
 	
 	for _, branchPage := range p.branchPages {
 		if true {
@@ -304,6 +345,7 @@ func (p *InternalPager) Save() []byte {
 	metaW.WriteUInt16(p.pageSize)
 	metaW.WriteUInt32(p.lastPageId)
 	metaW.WriteUInt32(p.rootPageId)
+	metaW.WriteUInt32(p.freelistPageId)
 
 	return metaW.ToBytes()
 }
