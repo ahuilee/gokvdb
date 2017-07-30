@@ -13,22 +13,20 @@ const (
 	LAZYSTRI64_BRANCH = 2
 )
 
-type LazyStrI64Dict struct {
-	dbName string
-	dictName string
+type SimpleStrI64Factory struct {
 
 	lastContextId uint32
 	rootContextId uint32
 	pageIdByContextId map[uint32]uint32
-	contextById map[uint32]*LazyStrI64Context
-	storage *Storage
-	internalPager IPager
+	contextById map[uint32]*SimpleStrI64Context
+	
+	pager IPager
 	
 	splitCount int
 	rwlock sync.Mutex
 }
 
-type LazyStrI64Context struct {
+type SimpleStrI64Context struct {
 	id uint32
 	pid uint32
 	ctxType byte
@@ -37,85 +35,72 @@ type LazyStrI64Context struct {
 	childContextIdByBranchKey map[int32]uint32
 
 	isChanged bool
-	dict *LazyStrI64Dict
+	dict *SimpleStrI64Factory
 }
 
-func NewStrI64Dict(s *Storage, dbName string, dictName string) *LazyStrI64Dict {
+func NewSimpleStrI64Factory(pager IPager, data []byte) *SimpleStrI64Factory {
 
-	dict := new(LazyStrI64Dict)
-	dict.storage = s
-	dict.dbName = dbName
-	dict.dictName = dictName
-	dict.contextById = make(map[uint32]*LazyStrI64Context)
-	dict.pageIdByContextId = make(map[uint32]uint32)
-	dict.splitCount = 0
+	self := new(SimpleStrI64Factory)
+	self.pager = pager
+	self.contextById = make(map[uint32]*SimpleStrI64Context)
+	self.pageIdByContextId = make(map[uint32]uint32)
+	self.splitCount = 0
 	
 	var lastContextId uint32
 	var rootContextId uint32
-	var internalPagerMeta []byte
 
-	db, err := s.DB(dbName)
-	if err != nil {
-		fmt.Println("error dbName", dbName)
-		os.Exit(1)
-	}
+		fmt.Println("NewSimpleStrI64Factory", data)
+	if data != nil {
 
-	metaData, ok := db.GetMeta(dictName)
 
-	if ok {
-		rd := NewDataStreamFromBuffer(metaData)
+		rd := NewDataStreamFromBuffer(data)
 
 		lastContextId = rd.ReadUInt32()
 		rootContextId = rd.ReadUInt32()
 
-		internalPagerMeta = rd.ReadChunk()
+		//internalPagerMeta = rd.ReadChunk()
 
-		rowsCont := int(rd.ReadUInt32())
+		rowsCount := int(rd.ReadUInt32())
 
-		for i:=0; i<rowsCont; i++ {
+		for i:=0; i<rowsCount; i++ {
 			ctxId := rd.ReadUInt32()
 			pgId := rd.ReadUInt32()
-			dict.pageIdByContextId[ctxId] = pgId	
+			self.pageIdByContextId[ctxId] = pgId	
 			//fmt.Println("NewStrI64Dict LOAD item", "ctxId", ctxId, "pid", pgId)
 		}
 
 	}
 
-	dict.lastContextId = lastContextId
-	dict.rootContextId = rootContextId
+	self.lastContextId = lastContextId
+	self.rootContextId = rootContextId
 
-	internalPageSize := uint16(128)
+	fmt.Println("NewSimpleStrI64Factory", self.ToString())
 
-	internalPager := NewInternalPager(s.pager, internalPageSize, internalPagerMeta)
-	dict.internalPager = internalPager
-
-	fmt.Println("NewStrI64Dict", dict.ToString())
-
-	return dict
+	return self
 }
 
-func (d *LazyStrI64Dict) ToString() string {
-	return fmt.Sprintf("<LazyStrI64Dict lastContextId=%v rootContextId=%v>", d.lastContextId, d.rootContextId)
+func (self *SimpleStrI64Factory) ToString() string {
+	return fmt.Sprintf("<SimpleStrI64Factory lastContextId=%v rootContextId=%v>", self.lastContextId, self.rootContextId)
 }
 
-type LazyStrI64Item struct {
+type SimpleStrI64Item struct {
 	key string
 	value int64
 }
 
-func (i *LazyStrI64Item) Key() string {
+func (i *SimpleStrI64Item) Key() string {
 	return i.key
 }
 
-func (i *LazyStrI64Item) Value() int64 {
+func (i *SimpleStrI64Item) Value() int64 {
 	return i.value
 }
 
-func (d *LazyStrI64Dict) Items() chan LazyStrI64Item {
+func (d *SimpleStrI64Factory) Items() chan SimpleStrI64Item {
 
-	q := make(chan LazyStrI64Item)
+	q := make(chan SimpleStrI64Item)
 
-	go func(ch chan LazyStrI64Item) {
+	go func(ch chan SimpleStrI64Item) {
 
 		root := d._GetRoot()
 		
@@ -127,31 +112,21 @@ func (d *LazyStrI64Dict) Items() chan LazyStrI64Item {
 	return q
 }
 
-func (d *LazyStrI64Dict) Set(key string, value int64) {
+func (d *SimpleStrI64Factory) Set(key string, value int64) {
 	root := d._GetRoot()
 	root.Set(key, value)
 }
 
-func (d *LazyStrI64Dict) Get(key string) (int64, bool) {
+func (d *SimpleStrI64Factory) Get(key string) (int64, bool) {
 	root := d._GetRoot()
-	
+	//fmt.Println("SimpleStrI64Factory root", root)	
 	val, ok := root.Get(key)
 	return val, ok
 }
 
 
-func (d *LazyStrI64Dict) _GetDB() *DBContext {
 
-	db, err := d.storage.DB(d.dbName)
-	if err != nil {
-		fmt.Println("Error dbName", d.dbName)
-		os.Exit(1)
-	}
-
-	return db
-}
-
-func (d *LazyStrI64Dict) Save() {
+func (d *SimpleStrI64Factory) Save() []byte {
 
 	d.rwlock.Lock()
 	defer d.rwlock.Unlock()
@@ -186,21 +161,20 @@ func (d *LazyStrI64Dict) Save() {
 			ctxData := w.ToBytes()
 
 			//bt.Set(int64(ctxId), ctxData)
-			d.internalPager.WritePayloadData(ctx.pid, ctxData)
+			d.pager.WritePayloadData(ctx.pid, ctxData)
 
 			//fmt.Println("LazyStrI64Dict SAVE ctxId=", ctxId, "bytes", len(ctxData), "rows", len( ctx.valueByKey))
 		}
 	}
 
-	db := d._GetDB()
 
 	metaW := NewDataStream()
 
 	metaW.WriteUInt32(d.lastContextId) 
 	metaW.WriteUInt32(d.rootContextId) 
 
-	internalPagerMeta := d.internalPager.Save()
-	metaW.WriteChunk(internalPagerMeta)
+	//internalPagerMeta := d.internalPager.Save()
+	//metaW.WriteChunk(internalPagerMeta)
 
 	metaW.WriteUInt32(uint32(len(d.pageIdByContextId)))
 
@@ -211,14 +185,12 @@ func (d *LazyStrI64Dict) Save() {
 
 	d.splitCount = 0
 
-	db.SetMeta(d.dictName, metaW.ToBytes())
-
-	d.storage.Save()
+	return metaW.ToBytes()
 }
 
 
 
-func (d *LazyStrI64Dict) _GetRoot() *LazyStrI64Context {
+func (d *SimpleStrI64Factory) _GetRoot() *SimpleStrI64Context {
 	if d.rootContextId == 0 {
 		root := d._CreateContext(LAZYSTRI64_DATA, 0)
 		d.rootContextId = root.id
@@ -228,7 +200,7 @@ func (d *LazyStrI64Dict) _GetRoot() *LazyStrI64Context {
 	return d._GetContextById(d.rootContextId)
 }
 
-func (d *LazyStrI64Dict) _GetContextById(id uint32) *LazyStrI64Context {
+func (d *SimpleStrI64Factory) _GetContextById(id uint32) *SimpleStrI64Context {
 	ctx, ok := d.contextById[id]
 
 	if !ok {
@@ -240,7 +212,7 @@ func (d *LazyStrI64Dict) _GetContextById(id uint32) *LazyStrI64Context {
 		
 		d.rwlock.Lock()
 		defer d.rwlock.Unlock()
-		data, err := d.internalPager.ReadPayloadData(pid)
+		data, err := d.pager.ReadPayloadData(pid)
 		if err != nil {
 			fmt.Println("error", err)
 			os.Exit(1)
@@ -285,9 +257,9 @@ func (d *LazyStrI64Dict) _GetContextById(id uint32) *LazyStrI64Context {
 	return ctx
 }
 
-func (d *LazyStrI64Dict) _NewContext(id uint32, pid uint32, ctxType byte, depth byte) *LazyStrI64Context {
+func (d *SimpleStrI64Factory) _NewContext(id uint32, pid uint32, ctxType byte, depth byte) *SimpleStrI64Context {
 
-	ctx := new(LazyStrI64Context)
+	ctx := new(SimpleStrI64Context)
 	ctx.id = id
 	ctx.pid = pid
 	ctx.ctxType = ctxType
@@ -300,17 +272,17 @@ func (d *LazyStrI64Dict) _NewContext(id uint32, pid uint32, ctxType byte, depth 
 	return ctx
 }
 
-func (d *LazyStrI64Dict) _CreateContext(ctxType byte, depth byte) *LazyStrI64Context {
+func (d *SimpleStrI64Factory) _CreateContext(ctxType byte, depth byte) *SimpleStrI64Context {
 	d.rwlock.Lock()
 	defer d.rwlock.Unlock()
 
 	id := d.lastContextId + 1
 	d.lastContextId = id
 
-	pid := d.internalPager.CreatePageId()
+	pid := d.pager.CreatePageId()
 
 	ctx := d._NewContext(id, pid, ctxType, depth)	
-	ctx.isChanged = false
+	ctx.isChanged = true
 	d.pageIdByContextId[id] = pid
 	d.contextById[id] = ctx
 
@@ -327,7 +299,7 @@ func _GetBranchSize(depth byte) int32 {
 	return 4096
 }
 
-func (c *LazyStrI64Context) GetChildContext(key string) *LazyStrI64Context {
+func (c *SimpleStrI64Context) GetChildContext(key string) *SimpleStrI64Context {
 
 	hashKey := _HashString(key)
 	branchSize := _GetBranchSize(c.depth)
@@ -336,7 +308,7 @@ func (c *LazyStrI64Context) GetChildContext(key string) *LazyStrI64Context {
 	return c.GetChildContextByBranchKey(branchKey)
 }
 
-func (c *LazyStrI64Context) GetChildContextByBranchKey(branchKey int32) *LazyStrI64Context {
+func (c *SimpleStrI64Context) GetChildContextByBranchKey(branchKey int32) *SimpleStrI64Context {
 
 	childCtxId, ok := c.childContextIdByBranchKey[branchKey]
 	if ok {
@@ -346,7 +318,7 @@ func (c *LazyStrI64Context) GetChildContextByBranchKey(branchKey int32) *LazyStr
 	return nil
 }
 
-func (c *LazyStrI64Context) GetOrCreateChildContext(key string) *LazyStrI64Context {
+func (c *SimpleStrI64Context) GetOrCreateChildContext(key string) *SimpleStrI64Context {
 	hashKey := _HashString(key)
 	branchSize := _GetBranchSize(c.depth)
 	branchKey := (hashKey / branchSize) * branchSize
@@ -362,12 +334,12 @@ func (c *LazyStrI64Context) GetOrCreateChildContext(key string) *LazyStrI64Conte
 	return ctx
 }
 
-func (c *LazyStrI64Context) ToString() string {
-	return fmt.Sprintf("<LazyStrI64Context id=%v ctxType=%v depth=%v>", c.id, c.ctxType, c.depth)
+func (c *SimpleStrI64Context) ToString() string {
+	return fmt.Sprintf("<SimpleStrI64Context id=%v ctxType=%v depth=%v>", c.id, c.ctxType, c.depth)
 }
 
 
-func (c *LazyStrI64Context) TakeItems(q chan LazyStrI64Item) {
+func (c *SimpleStrI64Context) TakeItems(q chan SimpleStrI64Item) {
 
 	if c.ctxType == LAZYSTRI64_BRANCH {
 
@@ -382,12 +354,12 @@ func (c *LazyStrI64Context) TakeItems(q chan LazyStrI64Item) {
 	}
 
 	for k, v := range c.valueByKey {
-		q <- LazyStrI64Item{key: k, value: v}
+		q <- SimpleStrI64Item{key: k, value: v}
 	}
 
 }
 
-func (c *LazyStrI64Context) Get(key string) (int64, bool) {
+func (c *SimpleStrI64Context) Get(key string) (int64, bool) {
 	//fmt.Println(c.ToString(), "Get", key)
 	if c.ctxType == LAZYSTRI64_BRANCH {
 
@@ -404,7 +376,7 @@ func (c *LazyStrI64Context) Get(key string) (int64, bool) {
 	return val, ok
 }
 
-func (c *LazyStrI64Context) Set(key string, value int64) {
+func (c *SimpleStrI64Context) Set(key string, value int64) {
 
 	//fmt.Println("[SET]", c.ToString(), key, value)
 
@@ -446,4 +418,104 @@ func _HashString(key string) int32 {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int32(h.Sum32())
+}
+
+
+
+/* */
+
+type LazyStrI64Dict struct {
+	dbName string
+	dictName string
+	storage *Storage
+	internalPager IPager
+	stri64Factory *SimpleStrI64Factory
+}
+
+func NewStrI64Dict(s *Storage, dbName string, dictName string) *LazyStrI64Dict {
+
+	dict := new(LazyStrI64Dict)
+	dict.storage = s
+	dict.dbName = dbName
+	dict.dictName = dictName
+	
+	var internalPagerMeta []byte
+	var factoryMeta []byte
+
+	db, err := s.DB(dbName)
+	if err != nil {
+		fmt.Println("error dbName", dbName)
+		os.Exit(1)
+	}
+
+	metaData, ok := db.GetMeta(dictName)
+
+	if ok {
+		rd := NewDataStreamFromBuffer(metaData)
+
+		internalPagerMeta = rd.ReadChunk()
+		factoryMeta = rd.ReadChunk()
+	}
+
+
+	internalPageSize := uint16(128)
+
+	internalPager := NewInternalPager(s.pager, internalPageSize, internalPagerMeta)
+	dict.internalPager = internalPager
+	dict.stri64Factory = NewSimpleStrI64Factory(internalPager, factoryMeta)
+
+	fmt.Println("NewStrI64Dict", dict.ToString())
+
+	return dict
+}
+
+
+func (self *LazyStrI64Dict) Save() {
+
+
+	db := self._GetDB()
+
+	factoryMeta := self.stri64Factory.Save()
+	internalPagerMeta := self.internalPager.Save()
+
+	//fmt.Println("LazyStrI64Dict Save factoryMeta", factoryMeta)
+
+	metaW := NewDataStream()
+	metaW.WriteChunk(internalPagerMeta)
+	metaW.WriteChunk(factoryMeta)
+
+	db.SetMeta(self.dictName, metaW.ToBytes())
+
+	self.storage.Save()
+	 
+}
+
+
+func (self *LazyStrI64Dict) Set(key string, value int64) {
+	self.stri64Factory.Set(key, value)
+}
+
+func (self *LazyStrI64Dict) Get(key string) (int64, bool) {
+	return self.stri64Factory.Get(key)
+}
+
+func (self *LazyStrI64Dict) Items() chan SimpleStrI64Item {
+	return self.stri64Factory.Items()
+}
+
+
+
+func (d *LazyStrI64Dict) _GetDB() *DBContext {
+
+	db, err := d.storage.DB(d.dbName)
+	if err != nil {
+		fmt.Println("Error dbName", d.dbName)
+		os.Exit(1)
+	}
+
+	return db
+}
+
+func (d *LazyStrI64Dict) ToString() string {
+	return fmt.Sprintf("<LazyStrI64Dict %v>", d.stri64Factory.ToString())
 }

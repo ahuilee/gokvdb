@@ -99,7 +99,7 @@ func (self *BranchI64BTreeFactory) LoadTreePage(pid uint32) *BranchI64BTreePage 
 
 
 func (self *BranchI64BTreeFactory) _EachItems(page *BranchI64BTreePage, outCh chan I64I64BTreeItem, depth int) {
-	fmt.Println("BEGIN _EachContexts depth", depth, page.ToString())
+	//fmt.Println("BEGIN _EachContexts depth", depth, page.ToString())
 
 	if depth >= 2 {
 		for item := range page.tree.Items() {

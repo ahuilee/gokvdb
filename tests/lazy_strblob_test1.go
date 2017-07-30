@@ -16,7 +16,7 @@ func main() {
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	dbPath := "./testdata/lazy_i64str.kv"
+	dbPath := "./testdata/lazy_strblob.kv"
 
 	total := 0
 	testCount := 1024

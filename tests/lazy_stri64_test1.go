@@ -35,10 +35,10 @@ func main() {
 
 	for j:=0; j<10; j++ {
 	
-		for i:=0; i<10; i++ {
+		for i:=0; i<2; i++ {
 			//testHashDict(dbPath, "mydb", "get_int_by_str", testCount, counterCallback)
 			//randItems := testutils.RandomStrI64Items(131072, logPath)
-			randItems := testutils.RandomStrI64Items(131072, logPath)
+			randItems := testutils.RandomStrI64Items(16384, logPath)
 			insertWithChan(dbPath, "mydb", "get_int_by_str", randItems)
 			
 		}
