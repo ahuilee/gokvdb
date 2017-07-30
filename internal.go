@@ -3,6 +3,7 @@ package gokvdb
 import (
 	"os"
 	"fmt"
+	"sync"
 )
 
 const (
@@ -24,6 +25,7 @@ type InternalPager struct {
 	contextByPageId map[uint32]*InternalDataContext
 	payloadFactory *PayloadPageFactory
 	isChanged bool
+	rwlock sync.Mutex
 }
 
 type InternalBranchPage struct {
@@ -155,6 +157,9 @@ func (p *InternalPager) ReadPayloadData(pid uint32) ([]byte, error) {
 
 func (p *InternalPager) ReadPage(pid uint32, count int) ([]byte, error) {
 
+	p.rwlock.Lock()
+	defer p.rwlock.Unlock()
+
 	branchRootKey, branchKey := p._GetBranchKeys(pid)
 	
 	branchPageId, ok := p.root[branchRootKey]
@@ -191,6 +196,8 @@ func (p *InternalPager) ReadPage(pid uint32, count int) ([]byte, error) {
 }
 
 func (p *InternalPager) WritePage(pid uint32, data []byte) {
+	p.rwlock.Lock()
+	defer p.rwlock.Unlock()
 
 	var branchPage *InternalBranchPage
 	var context *InternalDataContext

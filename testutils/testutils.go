@@ -306,3 +306,28 @@ func OpenBTeeBlobMap(path string, pageSize int, mode string, callback func(*gokv
 
 
 }
+
+
+
+func RandI64Array(count int) []int64 {
+
+	var vals []int64
+	valMap := make(map[int64]byte)
+
+	startVal := int64(rand.Int63n(549755813888)) - (549755813888/2)
+
+	for i:=0; i<count; i++ {
+		//v := int64(i * 2)
+		v := startVal
+		valMap[v] = 1
+
+		startVal += rand.Int63n(8192)
+		
+	}	
+
+	for v, _ := range valMap {
+		vals = append(vals, v)
+	}
+
+	return vals
+}

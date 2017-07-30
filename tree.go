@@ -6,6 +6,475 @@ import (
 	"sync"
 )
 
+
+type II64I64BTree interface {
+	GetRootNode() II64I64BTreeNode
+	SetRootNode(node II64I64BTreeNode)
+}
+
+type II64I64BTreeNode interface {
+
+	GetKey() int64
+
+	GetValue() int64
+	SetValue(value int64)
+
+	GetLeftNode() II64I64BTreeNode
+	SetLeftNode(node II64I64BTreeNode)
+
+	GetRightNode() II64I64BTreeNode
+	SetRightNode(node II64I64BTreeNode)
+
+	ToString() string
+}
+
+
+
+type I64I64BTreePage struct {
+	lastNodeId uint32
+	rootNodeId uint32
+	nodeById map[uint32]*I64I64BTreePageNode
+}
+
+type I64I64BTreePageNode struct {
+	id uint32
+	key int64
+	value int64
+	leftNodeId uint32
+	rightNodeId uint32
+
+	tree *I64I64BTreePage
+}
+
+func (self *I64I64BTreePage) GetRootNode() II64I64BTreeNode {
+	if self.rootNodeId > 0 {
+		node, ok := self.nodeById[self.rootNodeId]
+		if ok {
+			return node
+		}
+	}
+	return nil
+}
+
+
+func (self *I64I64BTreePage) SetRootNode(node II64I64BTreeNode) {
+	self.rootNodeId = 0
+
+	if node != nil {
+		_node := node.(*I64I64BTreePageNode)
+		self.rootNodeId = _node.id
+	}
+}
+
+func (self *I64I64BTreePage) NewNode(id uint32, key int64, value int64) *I64I64BTreePageNode {
+	node := new(I64I64BTreePageNode)
+	node.id = id
+	node.tree = self
+	node.key = key
+	node.value = value
+	node.leftNodeId = 0
+	node.rightNodeId = 0
+	return node
+}
+
+func (self *I64I64BTreePage) CreateNode(key int64, value int64) *I64I64BTreePageNode {
+
+	nodeId := self.lastNodeId + 1
+	self.lastNodeId = nodeId
+
+	node := self.NewNode(nodeId, key, value)
+	self.nodeById[nodeId] = node
+	return node
+}
+
+func (self *I64I64BTreePage) Count() int {
+	return len(self.nodeById)
+}
+
+type I64I64BTreeItem struct {
+	key int64
+	value int64
+}
+
+func (self *I64I64BTreeItem) Key() int64 {
+	return self.key
+}
+
+func (self *I64I64BTreeItem) Value() int64 {
+	return self.value
+}
+
+func (self *I64I64BTreePage) Items() chan I64I64BTreeItem {
+	q := make(chan I64I64BTreeItem)
+	go func(ch chan I64I64BTreeItem) {
+
+		for node := range TakeII64I64BTreeNodes(self) {
+			_node := node.(*I64I64BTreePageNode)
+			item := I64I64BTreeItem{key:_node.key, value: _node.value}
+			ch <- item
+		}
+
+		close(ch)
+	} (q)
+	return q
+}
+
+func (self *I64I64BTreePage) Get(key int64) (int64, bool) {
+
+	rootNode := self.GetRootNode()
+	node := rootNode
+
+	loopCount := 0
+
+	for {
+		loopCount += 1
+		if node == nil {
+			break
+		}
+
+		nodeKey := node.GetKey()
+
+		if loopCount > 16 {
+			fmt.Println("too many loop", loopCount, self.ToString())
+		}
+
+		if nodeKey == key {
+			return node.GetValue(), true
+		}
+
+		if key < nodeKey {
+			node = node.GetLeftNode()
+		} else {
+			node = node.GetRightNode()
+		}
+	}
+
+	return 0, false
+}
+
+func (self *I64I64BTreePage) Insert(key int64, value int64) {
+	rootNode := self.GetRootNode()
+	if rootNode == nil {
+		rootNode = self.CreateNode(key, value)
+		self.SetRootNode(rootNode)
+		return
+	}
+
+	var node II64I64BTreeNode
+	var parent II64I64BTreeNode
+	var dir byte
+
+	node = rootNode
+
+	var nodeStack []II64I64BTreeNode
+	var dirStack []byte
+
+	loopCount := 0
+
+	for {
+		loopCount += 1
+
+		if node == nil {
+			node = self.CreateNode(key, value)
+			if dir == BTREE_NODE_DIR_LEFT {
+				parent.SetLeftNode(node)
+			} else {
+				parent.SetRightNode(node)
+			}
+
+			//fmt.Println("CreateNode", node.ToString())
+			II64I64BTree_DoBalance(self, nodeStack, dirStack)
+		}
+
+		nodeKey := node.GetKey()
+
+		if nodeKey == key {
+			node.SetValue(value)
+			//fmt.Println(fmt.Sprintf("_InsertNode key=%v loopCount=%v\n", key, loopCount), node.ToString(), "findKey", findKey, )
+			return
+		}
+
+		parent = node
+
+		nodeStack = append(nodeStack, node)
+
+		if key < nodeKey {
+			node = node.GetLeftNode()
+			dir = BTREE_NODE_DIR_LEFT
+		} else {
+			node = node.GetRightNode()
+			dir = BTREE_NODE_DIR_RIGHT
+		}
+		dirStack = append(dirStack, dir)
+
+	}
+
+}
+
+func (self *I64I64BTreePage) ToString() string {
+	return fmt.Sprintf("<I64I64BTreePage rootNodeId=%v>", self.rootNodeId)
+}
+
+func (self *I64I64BTreePage) ToBytes() []byte {
+
+	w := NewDataStream()
+
+	w.WriteUInt32(uint32(self.lastNodeId))
+	w.WriteUInt32(uint32(self.rootNodeId))
+
+	w.WriteUInt16(uint16(len(self.nodeById)))
+	for _, node := range self.nodeById {
+		w.WriteUInt32(uint32(node.id))
+		w.WriteUInt32(uint32(node.leftNodeId))
+		w.WriteUInt32(uint32(node.rightNodeId))
+		w.WriteUInt64(uint64(node.key))
+		w.WriteUInt64(uint64(node.value))
+	}
+
+	return w.ToBytes()
+}
+
+func NewI64I64BTreePage(data []byte) *I64I64BTreePage {
+
+	tree := new(I64I64BTreePage)
+	tree.nodeById = make(map[uint32]*I64I64BTreePageNode)
+
+	lastNodeId := uint32(0)
+	rootNodeId := uint32(0)
+
+	if data != nil {
+
+		rd := NewDataStreamFromBuffer(data)
+		lastNodeId = rd.ReadUInt32()
+		rootNodeId = rd.ReadUInt32()
+		nodeCount := rd.ReadUInt16()
+
+		var i uint16
+
+		var nodeId uint32
+		var leftNodeId uint32
+		var rightNodeId uint32
+		var key int64
+		var value int64
+
+		for i=0; i<nodeCount; i++ {
+			nodeId = rd.ReadUInt32()
+			leftNodeId = rd.ReadUInt32()
+			rightNodeId = rd.ReadUInt32()
+			key = int64(rd.ReadUInt64())
+			value = int64(rd.ReadUInt64())
+
+			node := tree.NewNode(nodeId, key, value)
+			node.leftNodeId = leftNodeId
+			node.rightNodeId = rightNodeId
+
+			tree.nodeById[nodeId] = node
+
+			//fmt.Println("LOAD", node)
+		}
+	}
+
+	tree.lastNodeId = lastNodeId
+	tree.rootNodeId = rootNodeId
+
+	return tree
+}
+
+
+func (self *I64I64BTreePageNode) GetKey() int64 {
+	return self.key
+}
+
+func (self *I64I64BTreePageNode) SetValue(value int64) {
+	self.value = value
+}
+
+func (self *I64I64BTreePageNode) GetValue() int64 {
+	return self.value
+}
+
+func (self *I64I64BTreePageNode) GetLeftNode() II64I64BTreeNode {
+	//fmt.Println("GetLeftNode", self.ToString())
+	if self.leftNodeId > 0 {
+		node, ok := self.tree.nodeById[self.leftNodeId]
+		if ok {
+			return node
+		}
+	}
+	return nil
+}
+
+func (self *I64I64BTreePageNode) GetRightNode() II64I64BTreeNode {
+
+	if self.rightNodeId > 0 {
+		node, ok := self.tree.nodeById[self.rightNodeId]
+		if ok {
+			return node
+		}
+	}
+	return nil
+}
+
+func (self *I64I64BTreePageNode) SetLeftNode(node II64I64BTreeNode) {
+	self.leftNodeId = 0
+	if node != nil {
+		_node := node.(*I64I64BTreePageNode)
+		self.leftNodeId = _node.id
+	}
+}
+
+func (self *I64I64BTreePageNode) SetRightNode(node II64I64BTreeNode) {
+	self.rightNodeId = 0
+	if node != nil {
+		_node := node.(*I64I64BTreePageNode)
+		self.rightNodeId = _node.id
+	}
+
+}
+
+func (self *I64I64BTreePageNode) ToString() string {
+	return fmt.Sprintf("<LazyBTreePageNode id=%v key=%v value=%v left=%v right=%v>", self.id, self.key, self.value, self.leftNodeId, self.rightNodeId)
+}
+
+/* BTree */
+
+func TakeII64I64BTreeNodes(tree II64I64BTree) chan II64I64BTreeNode {
+
+	q := make(chan II64I64BTreeNode)
+
+	go func(chOutNodes chan II64I64BTreeNode) {
+		rootNode := tree.GetRootNode()
+		node := rootNode
+		goLeft := true
+		var stack []II64I64BTreeNode
+
+		for {
+			if node == nil {
+				break
+			}
+			leftNode := node.GetLeftNode()
+			rightNode := node.GetRightNode()
+			if goLeft && leftNode != nil {
+				stack = append(stack, node)
+				node = leftNode
+			} else {
+				chOutNodes <- node
+				if rightNode != nil {
+					node = rightNode
+					goLeft = true
+
+				} else {
+					if len(stack) == 0 {
+						break
+					}
+
+					node = stack[len(stack)-1]
+					stack = stack[:len(stack)-1]
+					goLeft = false
+				}
+
+			}
+		}
+
+		close(chOutNodes)
+	}(q)
+	return q
+}
+
+
+/* ALV */
+func II64I64BTree_DoBalance(tree II64I64BTree, nodeStack []II64I64BTreeNode, dirStack []byte) {
+
+	//fmt.Println("ALVDoBalance", "nodeStack", nodeStack)
+
+	balanceCount := 0
+	for i:=len(nodeStack)-1; i>=0; i-- {
+		node := nodeStack[i]
+		//fmt.Println("ALVDoBalance", node.ToString())
+		leftHeight := ALVCalcHeight(node, BTREE_NODE_DIR_LEFT)
+		rightHeight := ALVCalcHeight(node, BTREE_NODE_DIR_RIGHT)
+		balance := rightHeight - leftHeight
+
+		//fmt.Printf("_DoBalance balance=%v leftHeight=%v rightHeight=%v\n", balance, leftHeight, rightHeight)
+
+		var newRoot II64I64BTreeNode
+		if balance < -1 {
+			newRoot = ALVRotateRight(node)
+			//fmt.Println("_DoBalance _RotateRight", node.ToString())
+
+		} else if balance > 1 {
+			newRoot = ALVRotateLeft(node)
+			//fmt.Println("_DoBalance _RotateLeft", node.ToString())
+		}
+
+		if newRoot != nil {
+			if i > 0 {
+				parent := nodeStack[i-1]
+				nodeDir := dirStack[i-1]
+				if nodeDir == BTREE_NODE_DIR_LEFT {
+					parent.SetLeftNode(newRoot)
+				} else {
+					parent.SetRightNode(newRoot)
+				}
+
+			} else {
+				tree.SetRootNode(newRoot)
+			}
+
+			//bt.isChanged = true
+
+			balanceCount += 1
+			
+		}
+
+		if balanceCount >= 8 {
+			break
+		}
+
+	}
+}
+
+
+func ALVRotateLeft(node II64I64BTreeNode) II64I64BTreeNode {
+
+	nodeRight := node.GetRightNode()
+	node.SetRightNode(nodeRight.GetLeftNode())
+	nodeRight.SetLeftNode(node)
+
+	return nodeRight
+}
+
+func ALVRotateRight(node II64I64BTreeNode) II64I64BTreeNode {
+	nodeLeft := node.GetLeftNode()
+	node.SetLeftNode(nodeLeft.GetRightNode())
+	nodeLeft.SetRightNode(node)
+
+	return nodeLeft
+}
+
+func ALVCalcHeight(node II64I64BTreeNode, dir byte) int {
+	height := 0
+	for {
+		if node == nil {
+			break
+		}
+
+		height += 1
+		if dir == BTREE_NODE_DIR_LEFT {
+			node = node.GetLeftNode()
+		} else {
+			node = node.GetRightNode()
+		}
+	}
+
+	return height
+}
+
+
+
+
+/**/
+
 type BTreeBlobMap struct {
 	pager IPager
 
@@ -667,5 +1136,4 @@ func (n *BTreeBlobMapNode) GetOrCreateDataContext() *BTreeBlobMapNodeContext {
 
 	return dp
 }
-
 

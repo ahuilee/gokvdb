@@ -2,9 +2,9 @@ package main
 
 
 import (
-	//"os"
+	"os"
 	"fmt"
-	"bytes"
+	//"bytes"
 	"time"
 	"math/rand"
 	"../../gokvdb"
@@ -16,11 +16,11 @@ func main() {
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	dbPath := "./testdata/test_tree.kv"
+	dbPath := "./testdata/test_treepage.kv"
 	pageSize := 4096
 
 
-	for i:=0; i<4096; i++ {
+	for i:=0; i<1; i++ {
 		TestTree(dbPath, pageSize, 128)
 	}
 
@@ -31,43 +31,69 @@ func TestTree(dbPath string, pageSize int, testCount int) {
 
 
 
+	var pid uint32
+	metaOffset := 0
 
-	testData := make(map[int64][]byte)
+	testData := make(map[int64]int64)
 
-	for i:=0; i<testCount; i++ {
+	testutils.OpenStreamPager(dbPath, pageSize, metaOffset, "w", func(pager gokvdb.IPager) {
 
-		var key int64
-		var data1 []byte
+		pid = pager.CreatePageId()
+		tree := gokvdb.NewI64I64BTreePage(nil)
 
-		key = rand.Int63n(8589934592)
+		for i:=0; i<4096; i++ {
+			k := rand.Int63n(68719476736)
+			v := rand.Int63n(68719476736)
+			tree.Insert(k, v)
+			fmt.Println("Insert", k, v)
 
-		testutils.OpenBTeeBlobMap(dbPath, pageSize, "w", func(tree *gokvdb.BTreeBlobMap) {
+			testData[k] = v
+		}
 
-			data1 = testutils.RandBytes(rand.Intn(16384) + 512)
+		pager.WritePayloadData(pid, tree.ToBytes())
 
-			tree.Set(key, data1)
-			testData[key] = data1
+	})
 
-			fmt.Printf("SET key=%v bytes=%v \n", key , len(data1))
 
-		})
+	testutils.OpenStreamPager(dbPath, pageSize, metaOffset, "r", func(pager gokvdb.IPager) {
 
-	}
+		data, _ := pager.ReadPayloadData(pid)
 
-	testutils.OpenBTeeBlobMap(dbPath, pageSize, "r", func(tree *gokvdb.BTreeBlobMap) {
+		tree := gokvdb.NewI64I64BTreePage(data)
 
-		for key, data1 := range testData {
-
-			data2 , ok := tree.Get(key)
+		for k, v := range testData {
+			v2, ok := tree.Get(k)
 			if !ok {
-				fmt.Printf("VALID key=%v Failed!\n", key)
+				fmt.Println("GET NoKey", k)
+				os.Exit(1)
 			}
-			compareRtn := bytes.Compare(data1, data2)
-			fmt.Printf("VALID key=%v bytes=%v compareRtn=%v\n", key , len(data2), compareRtn)
+			fmt.Printf("GET k=%v v=%v v2=%v\n", k, v, v2)
+			if v != v2 {
+				os.Exit(1)
+			}
 		}
 
 	})
 
+
+	testutils.OpenStreamPager(dbPath, pageSize, metaOffset, "r", func(pager gokvdb.IPager) {
+
+		data, _ := pager.ReadPayloadData(pid)
+
+		tree := gokvdb.NewI64I64BTreePage(data)
+
+		fmt.Println("Load", tree.Count())
+
+		count := 0
+
+		for range tree.Items() {
+			count += 1
+			//fmt.Printf("Items %07d k=%v v=%v\n", count, item.Key(), item.Value())
+		}
+		fmt.Printf("Items %07d\n", count)
+
+
+	})
 
 
 }

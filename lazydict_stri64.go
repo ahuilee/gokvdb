@@ -392,6 +392,9 @@ func (c *LazyStrI64Context) Get(key string) (int64, bool) {
 	if c.ctxType == LAZYSTRI64_BRANCH {
 
 		branchCtx := c.GetChildContext(key)
+		if branchCtx == nil {
+			return 0, false
+		}
 
 		return branchCtx.Get(key)
 	}
@@ -426,7 +429,7 @@ func (c *LazyStrI64Context) Set(key string, value int64) {
 			c.ctxType = LAZYSTRI64_BRANCH
 
 			for k, v := range c.valueByKey {
-				fmt.Println("[SPLIT]", c.ToString(), k, v)
+				//fmt.Println("[SPLIT]", c.ToString(), k, v)
 				c.Set(k, v)
 			}
 
