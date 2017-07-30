@@ -238,7 +238,7 @@ func (self *BranchI64BTreeFactory) GetOrCreatePage(key int64) *BranchI64BTreePag
 
 func (self *BranchI64BTreeFactory) Save() []byte {
 
-	fmt.Println("SAVE...", self.ToString())
+	//fmt.Println("SAVE...", self.ToString())
 
 	for pid, treePage := range self.treePageByPageId {
 		//fmt.Println("SAVE...", treePage.ToString())
