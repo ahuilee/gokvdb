@@ -146,7 +146,7 @@ func (self *LazyStrI64SetDict) Save() {
 }
 
 
-func NewLazyStrI64SetDict(storage *Storage, dbName string, dictName string) *LazyStrI64SetDict {
+func NewStrI64SetDict(storage *Storage, dbName string, dictName string) *LazyStrI64SetDict {
 
 	self := new(LazyStrI64SetDict)
 	self.storage = storage

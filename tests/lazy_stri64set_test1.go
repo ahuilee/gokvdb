@@ -37,7 +37,7 @@ func Test(dbPath string, dbName string, dictName string) {
 
 	testutils.OpenStorage(dbPath, func(s *gokvdb.Storage) {
 
-			set := gokvdb.NewLazyStrI64SetDict(s, dbName, dictName)
+			set := gokvdb.NewStrI64SetDict(s, dbName, dictName)
 
 			for i:= 0; i<32; i++ {
 				key := fmt.Sprintf("key-%v", uuid.NewV4())
@@ -59,7 +59,7 @@ func Test(dbPath string, dbName string, dictName string) {
 	})
 
 	testutils.OpenStorage(dbPath, func(s *gokvdb.Storage) {
-		set := gokvdb.NewLazyStrI64SetDict(s, dbName, dictName)
+		set := gokvdb.NewStrI64SetDict(s, dbName, dictName)
 
 	
 		for _, key := range keys {
