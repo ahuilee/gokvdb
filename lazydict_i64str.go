@@ -4,6 +4,7 @@ package gokvdb
 import (
 	"fmt"
 	"os"
+	"sort"
 	//"hash/fnv"
 )
 
@@ -12,17 +13,17 @@ type LazyI64StrDict struct {
 	dictName string
 	storage *Storage
 	
-	getContextByBranchKey map[int64]*LazyI64StrContext
-
+	contextByBranchKey map[int64]*LazyI64StrContext
 	//bt *BTreeIndex
-
 	internalPager IPager
-	bt *BTreeBlobMap
+	keyFactory *BranchI64BTreeFactory
+	//bt *BTreeBlobMap
 	isChanged bool
 }
 
 type LazyI64StrContext struct {
-	btKey int64
+	pid uint32
+	branchKey int64
 	getValueByKey map[int64]string
 	isChanged bool
 	dict *LazyI64StrDict
@@ -30,11 +31,11 @@ type LazyI64StrContext struct {
 
 func NewI64StrDict(s *Storage, dbName string, dictName string) *LazyI64StrDict {
 
-	dict := new(LazyI64StrDict)
-	dict.dbName = dbName
-	dict.dictName = dictName
-	dict.storage = s
-	dict.getContextByBranchKey = make(map[int64]*LazyI64StrContext)
+	self := new(LazyI64StrDict)
+	self.dbName = dbName
+	self.dictName = dictName
+	self.storage = s
+	self.contextByBranchKey = make(map[int64]*LazyI64StrContext)
 
 	db, err := s.DB(dbName)
 	if err != nil {
@@ -44,34 +45,25 @@ func NewI64StrDict(s *Storage, dbName string, dictName string) *LazyI64StrDict {
 
 	metaData, ok := db.GetMeta(dictName)
 
-	//fmt.Println("NewI64StrDict metaData", ok, metaData)
-
 	var internalPagerMeta []byte
-	var btMeta []byte
+	var keyFactoryMeta []byte
 
 	if ok {
 
 		rd := NewDataStreamFromBuffer(metaData)
 		internalPagerMeta = rd.ReadChunk()
-		btMeta = rd.ReadChunk()
+		keyFactoryMeta = rd.ReadChunk()
+		//fmt.Println("NewI64StrDict keyFactoryMeta", keyFactoryMeta)
 
 	} 
 
 	internalPageSize := uint16(128)
+	internalPager := NewInternalPager(s.pager, internalPageSize, internalPagerMeta)	
 
-	internalPager := NewInternalPager(s.pager, internalPageSize, internalPagerMeta)
-	//fmt.Println("NewI64StrDict internalPager", internalPager.ToString())
+	self.internalPager = internalPager
+	self.keyFactory = NewBranchI64BTreeFactory(internalPager, keyFactoryMeta, 3)
 
-	btMap := NewBTreeBlobMap(internalPager, btMeta)
-
-	
-	//fmt.Println("NewI64StrDict btMap", btMap.ToString())
-	
-
-	dict.internalPager = internalPager
-	dict.bt = btMap
-
-	return dict
+	return self
 }
 
 func (d *LazyI64StrDict) ToString() string {
@@ -79,52 +71,9 @@ func (d *LazyI64StrDict) ToString() string {
 }
 
 func (c *LazyI64StrContext) ToString() string {
-	return fmt.Sprintf("<LazyI64StrContext btKey=%v>", c.btKey)
+	return fmt.Sprintf("<LazyI64StrContext pid=%v branchKey=%v>", c.pid, c.branchKey)
 }
 
-func (d *LazyI64StrDict) _GetBt() *BTreeBlobMap {
-	/*
-	if d.bt == nil {
-		db, _ := d.storage.DB(d.dbName)
-		bt, _ := db.OpenBTree(d.dictName)
-		d.bt = bt
-	}*/
-	return d.bt
-}
-
-func (d *LazyI64StrDict) _ReadContext(branchKey int64, data []byte) *LazyI64StrContext {
-
-	ctx := d._NewContext(branchKey)
-			
-	rd := NewDataStreamFromBuffer(data)
-	rowsCount := int(rd.ReadUInt24())
-	for i:=0; i<rowsCount; i++ {
-		key := int64(rd.ReadUInt64())
-		valChunk := rd.ReadChunk()
-		ctx.getValueByKey[key] = string(valChunk)
-	}
-	return ctx
-}
-
-func (d *LazyI64StrDict) _GetContext(branchKey int64) *LazyI64StrContext {
-
-	ctx, ok := d.getContextByBranchKey[branchKey]
-	if !ok {
-		bt := d._GetBt()
-		data, ok := bt.Get(branchKey)
-		//fmt.Println("_GetContext branchKey=", branchKey, data)
-		if ok {
-
-			ctx = d._ReadContext(branchKey, data)
-			
-
-			d.getContextByBranchKey[branchKey] = ctx
-		}
-	}
-
-	return ctx
-
-}
 
 func (d *LazyI64StrDict) _GetBranchKey(key int64) int64 {
 	return key / 4096
@@ -143,23 +92,31 @@ func (i *LazyI64StrDictItem) Value() string {
 	return i.value
 }
 
-func (d *LazyI64StrDict) Items() chan LazyI64StrDictItem {
+func (self *LazyI64StrDict) Items() chan LazyI64StrDictItem {
 	q := make(chan LazyI64StrDictItem)
 	go func(ch chan LazyI64StrDictItem) {
 
-		bt := d.bt
 
-		for branchItem := range bt.Items() {
-			//fmt.Println("LazyI64StrDict Items bt", branchItem)
-			branchKey := branchItem.Key()
+		for _item := range self.keyFactory.Items() {
 
-			ctx, ok := d.getContextByBranchKey[branchKey]
+			branchKey := _item.Key()
+			ctxPageId := uint32(_item.Value())
+
+			ctx, ok := self.contextByBranchKey[branchKey]
 			if !ok {
-				ctx = d._ReadContext(branchKey, branchItem.Value())
+				ctx = self._ReadContext(ctxPageId, branchKey)
 			}
 
-			for k, v := range ctx.getValueByKey {
+			var keys I64Array
 
+			for k, _ := range ctx.getValueByKey {
+				keys = append(keys, k)
+			}
+
+			sort.Sort(keys)
+
+			for _, k := range keys {
+				v, _ := ctx.getValueByKey[k]
 				ch <- LazyI64StrDictItem{key: k, value: v}
 			}
 		}
@@ -170,14 +127,19 @@ func (d *LazyI64StrDict) Items() chan LazyI64StrDictItem {
 	return q
 }
 
-func (d *LazyI64StrDict) Set(key int64, value string) {
-	//bt := d._GetBt()
-	branchKey := d._GetBranchKey(key)
-	ctx := d._GetContext(branchKey)
+func (self *LazyI64StrDict) Set(key int64, value string) {
+	branchKey := self._GetBranchKey(key)
+	ctx := self._GetContextByBranchKey(branchKey)
+
 	if ctx == nil {
-		ctx = d._NewContext(branchKey)
+		ctxPageId := self.internalPager.CreatePageId()
+		
+		page := self.keyFactory.GetOrCreatePage(branchKey)	
+		page.Set(branchKey, int64(ctxPageId))
+
+		ctx = self._NewContext(ctxPageId, branchKey)
 		ctx.isChanged = true
-		d.getContextByBranchKey[branchKey] = ctx
+		self.contextByBranchKey[branchKey] = ctx
 	}
 
 	//fmt.Println(d.ToString(), "SET", key, value, ctx.ToString())
@@ -186,10 +148,10 @@ func (d *LazyI64StrDict) Set(key int64, value string) {
 	ctx.isChanged = true
 }
 
-func (d *LazyI64StrDict) Get(key int64) (string, bool) {
+func (self *LazyI64StrDict) Get(key int64) (string, bool) {
 	//bt := d._GetBt()
-	branchKey := d._GetBranchKey(key)
-	ctx := d._GetContext(branchKey)
+	branchKey := self._GetBranchKey(key)
+	ctx := self._GetContextByBranchKey(branchKey)
 	if ctx != nil {
 		val, ok := ctx.getValueByKey[key]
 		if ok {
@@ -200,14 +162,27 @@ func (d *LazyI64StrDict) Get(key int64) (string, bool) {
 	return "", false
 }
 
-func (d *LazyI64StrDict) Save() {
+func (self *LazyI64StrDict) ReleaseCache() {
+	var keys []int64
+	for key, ctx := range self.contextByBranchKey {
+		if !ctx.isChanged {
+			keys = append(keys, key)
+		}
+	}
+
+	for _, key := range keys {
+		ctx, _ := self.contextByBranchKey[key]
+		fmt.Println("[ReleaseCache]", ctx.ToString())
+		delete(self.contextByBranchKey, key)
+		ctx = nil
+	}
+}
+
+func (self *LazyI64StrDict) Save(commit bool) {
 	//fmt.Println("Save", d.ToString())
-
-	bt := d._GetBt()
-
 	//isChanged := false
 
-	for btKey, ctx := range d.getContextByBranchKey {
+	for _, ctx := range self.contextByBranchKey {
 		if ctx.isChanged {
 
 			w := NewDataStream()
@@ -216,52 +191,87 @@ func (d *LazyI64StrDict) Save() {
 			for k, v := range ctx.getValueByKey {
 				w.WriteUInt64(uint64(k))
 				w.WriteChunk([]byte(v))
-
 				//fmt.Println("SAVE CONTEXT", k, v)
 			}
 
 			ctxData := w.ToBytes()
-
-			bt.Set(btKey, ctxData)
+			self.internalPager.WritePayloadData(ctx.pid, ctxData)
 
 			ctx.isChanged = false
 			//isChanged = true
-			//fmt.Println("Save btKey=", btKey, "bytes", len(ctxData))
+			//fmt.Println("Save", ctx.ToString(), "bytes", len(ctxData))
 		}
 	}
 
 
-	db, err := d.storage.DB(d.dbName)
+	db, err := self.storage.DB(self.dbName)
 	if err != nil {
-		fmt.Println("error dbName", d.dbName)
+		fmt.Println("error dbName", self.dbName)
 		os.Exit(1)
 	}
 
-	btMeta := bt.Save()
-	internalPagerMeta := d.internalPager.Save()
+	keyMeta := self.keyFactory.Save()
+	internalPagerMeta := self.internalPager.Save()
 
 	metaW := NewDataStream()
 	metaW.WriteChunk(internalPagerMeta)
-	metaW.WriteChunk(btMeta)
+	metaW.WriteChunk(keyMeta)
 
 	metaBytes := metaW.ToBytes()
 
-	db.SetMeta(d.dictName, metaBytes)
+	db.SetMeta(self.dictName, metaBytes)
 
-	//fmt.Println("SAVE", d.ToString(), metaBytes)
-
-	//fmt.Println("SAVE internalPager", d.internalPager.ToString())
-	//fmt.Println("SAVE btMap", d.bt.ToString())
-
-	d.storage.Save()
+	if commit {
+		self.storage.Save()
+	}
 }
 
-func (d *LazyI64StrDict) _NewContext(btKey int64) *LazyI64StrContext {
+func (d *LazyI64StrDict) _NewContext(pid uint32, branchKey int64) *LazyI64StrContext {
 	ctx := new(LazyI64StrContext)
-	ctx.btKey = btKey
+	ctx.pid = pid
+	ctx.branchKey = branchKey
 	ctx.getValueByKey = make(map[int64]string)
 	ctx.isChanged = false
 
 	return ctx
 }
 
+
+func (self *LazyI64StrDict) _ReadContext(pid uint32, branchKey int64) *LazyI64StrContext {
+
+	ctx := self._NewContext(pid, branchKey)
+
+	data, _ := self.internalPager.ReadPayloadData(pid)
+
+			
+	rd := NewDataStreamFromBuffer(data)
+	rowsCount := int(rd.ReadUInt24())
+	for i:=0; i<rowsCount; i++ {
+		key := int64(rd.ReadUInt64())
+		valChunk := rd.ReadChunk()
+		ctx.getValueByKey[key] = string(valChunk)
+	}
+	return ctx
+}
+
+func (self *LazyI64StrDict) _GetContextByBranchKey(branchKey int64) *LazyI64StrContext {
+
+	ctx, ok := self.contextByBranchKey[branchKey]
+	if !ok {
+		page := self.keyFactory.GetPage(branchKey)	
+		
+		if page != nil {
+			_ctxPageId, ok := page.Get(branchKey)
+			if ok {
+				ctxPageId := uint32(_ctxPageId)
+				ctx = self._ReadContext(ctxPageId, branchKey)
+				self.contextByBranchKey[branchKey] = ctx
+
+				return ctx
+			}
+		}
+	}
+
+	return ctx
+
+}

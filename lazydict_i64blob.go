@@ -109,7 +109,7 @@ func (d *LazyI64BlobDict) Get(key int64) ([]byte, bool) {
 	return value, ok
 }
 
-func (d *LazyI64BlobDict) Save() {
+func (d *LazyI64BlobDict) Save(commit bool) {
 	//fmt.Println("Save", d.ToString())
 
 	bt := d.bt
@@ -131,6 +131,8 @@ func (d *LazyI64BlobDict) Save() {
 
 	db.SetMeta(d.dictName, metaBytes)
 
-	d.storage.Save()
+	if commit {
+		d.storage.Save()
+	}
 }
 

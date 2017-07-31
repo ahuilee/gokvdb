@@ -117,7 +117,7 @@ func (self *LazyStrI64SetDict) Add(key string, value int64) {
 }
 
 
-func (self *LazyStrI64SetDict) Save() {
+func (self *LazyStrI64SetDict) Save(commit bool) {
 
 	for _, ctx := range self.contextByKey {
 		if ctx.isChanged {
@@ -142,7 +142,10 @@ func (self *LazyStrI64SetDict) Save() {
 	metaW.WriteChunk(keyFactoryData)
 
 	db.SetMeta(self.dictName, metaW.ToBytes())
-	self.storage.Save()
+
+	if commit {
+		self.storage.Save()
+	}
 }
 
 

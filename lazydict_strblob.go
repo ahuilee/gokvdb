@@ -141,7 +141,7 @@ func (d *LazyStrBlobDict) _GetDB() *DBContext {
 	return db
 }
 
-func (d *LazyStrBlobDict) Save() {
+func (d *LazyStrBlobDict) Save(commit bool) {
 
 	db := d._GetDB()
 
@@ -157,6 +157,9 @@ func (d *LazyStrBlobDict) Save() {
 
 	db.SetMeta(d.dictName, metaW.ToBytes())
 
-	d.idByKeyDict.Save()
-	d.storage.Save()
+	d.idByKeyDict.Save(commit)
+
+	if commit {
+		d.storage.Save()
+	}
 }

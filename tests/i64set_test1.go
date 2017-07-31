@@ -22,11 +22,11 @@ func main() {
 
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	dbPath := "./testdata/test_i64set.kv"
 	pageSize := 4096
 
 
-	for i:=0; i<128; i++ {
+	for i:=0; i<16; i++ {
+		dbPath := fmt.Sprintf("./testdata/test_i64set_%v.kv", time.Now().UTC().UnixNano())
 		TestSet(dbPath, pageSize)
 	}
 
@@ -45,17 +45,33 @@ func TestSet(dbPath string, pageSize int) {
 	metaOffset := 0
 
 	//testData := make(map[int64]int64)
-	var vals I64Array
-	vals = testutils.RandI64Array(10000)
 
-	for j:=0; j<8; j++ {
+	valSet := make(map[int64]byte)
+
+	startVal := int64(9223372036854775807)
+
+	testutils.OpenInternalPager(dbPath, pageSize, metaOffset, "w", func(pager gokvdb.IPager) {
+
+			pid = pager.CreatePageId()
+	})
+	
+	
+
+	for j:=0; j<32; j++ {
 
 		testutils.OpenInternalPager(dbPath, pageSize, metaOffset, "w", func(pager gokvdb.IPager) {
 
-			pid = pager.CreatePageId()
-			set := gokvdb.NewLazyI64Set(pager, nil)
+			_meta, _ := pager.ReadPayloadData(pid)
+			set := gokvdb.NewLazyI64Set(pager, _meta)
 
-			for i, v := range vals {
+			randVals := testutils.RandI64Array(16384)
+
+			for i, v := range randVals {
+				valSet[v] = 1
+
+				if v < startVal {
+					startVal = v
+				}
 				
 				fmt.Printf("%04d i64Set i=%v add=%v\n", testCounter, i, v)
 				set.Add(v)
@@ -66,6 +82,12 @@ func TestSet(dbPath string, pageSize int) {
 
 			fmt.Println("Save", set.ToString())
 		})
+	}
+
+	var vals I64Array
+	
+	for v, _ := range valSet {
+		vals = append(vals, v)
 	}
 
 	sort.Sort(vals)
@@ -89,7 +111,7 @@ func TestSet(dbPath string, pageSize int) {
 			fmt.Printf("%04d VALUES i=%07d v=%v v2=%v valid=%v\n", testCounter, count, v, v2, isValid)
 			count += 1
 			if !isValid {
-				fmt.Println("VALID ERROR!")
+				fmt.Println("VALID ERROR!", "startVal", startVal)
 				os.Exit(1)
 			}
 		}

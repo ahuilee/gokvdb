@@ -49,7 +49,7 @@ func NewSimpleStrI64Factory(pager IPager, data []byte) *SimpleStrI64Factory {
 	var lastContextId uint32
 	var rootContextId uint32
 
-		fmt.Println("NewSimpleStrI64Factory", data)
+	//fmt.Println("NewSimpleStrI64Factory", data)
 	if data != nil {
 
 
@@ -125,6 +125,24 @@ func (d *SimpleStrI64Factory) Get(key string) (int64, bool) {
 }
 
 
+func (self *SimpleStrI64Factory) ReleaseCache() {
+
+	var keys []uint32
+
+	for key, ctx := range self.contextById {
+		if !ctx.isChanged {
+			keys = append(keys, key)
+		}
+	}
+
+	for _, key := range keys {
+		ctx, _ := self.contextById[key]
+		fmt.Println("[ReleaseCache]", ctx.ToString())
+		delete(self.contextById, key)
+		ctx = nil
+	}
+
+}
 
 func (d *SimpleStrI64Factory) Save() []byte {
 
@@ -142,7 +160,7 @@ func (d *SimpleStrI64Factory) Save() []byte {
 
 			switch ctx.ctxType {
 			case LAZYSTRI64_DATA:
-				w.WriteUInt16(uint16(len(ctx.valueByKey)))
+				w.WriteUInt24(uint32(len(ctx.valueByKey)))
 
 				for k, v := range ctx.valueByKey {
 					w.WriteHStr(k)
@@ -150,7 +168,7 @@ func (d *SimpleStrI64Factory) Save() []byte {
 				}
 
 			case LAZYSTRI64_BRANCH:
-				w.WriteUInt16(uint16(len(ctx.childContextIdByBranchKey)))
+				w.WriteUInt24(uint32(len(ctx.childContextIdByBranchKey)))
 
 				for k, v := range ctx.childContextIdByBranchKey {
 					w.WriteUInt32(uint32(k))
@@ -200,58 +218,54 @@ func (d *SimpleStrI64Factory) _GetRoot() *SimpleStrI64Context {
 	return d._GetContextById(d.rootContextId)
 }
 
-func (d *SimpleStrI64Factory) _GetContextById(id uint32) *SimpleStrI64Context {
-	ctx, ok := d.contextById[id]
+func (self *SimpleStrI64Factory) _LoadContext(id uint32, pid uint32) *SimpleStrI64Context {
+	self.rwlock.Lock()
+	defer self.rwlock.Unlock()
+
+	data, _ := self.pager.ReadPayloadData(pid)
+	rd := NewDataStreamFromBuffer(data)
+
+	ctxType := rd.ReadUInt8()
+	depth := rd.ReadUInt8()
+
+	ctx := self._NewContext(id, pid, ctxType, depth)	
+
+	var rowsCount int
+	rowsCount = int(rd.ReadUInt24())
+	//fmt.Println("_GetContext", ctx.ToString(), "rowsCount", rowsCount)
+	switch ctx.ctxType {
+	case LAZYSTRI64_DATA:
+
+		for i:=0; i<rowsCount; i++ {
+			k := rd.ReadHStr()
+			v := int64(rd.ReadUInt64())
+			ctx.valueByKey[k] = v
+		}
+
+	case LAZYSTRI64_BRANCH:
+
+		for i:=0; i<rowsCount; i++ {
+			k := int32(rd.ReadUInt32())
+			v := rd.ReadUInt32()
+			ctx.childContextIdByBranchKey[k] = v
+		}
+	}
+
+	return ctx
+}
+
+func (self *SimpleStrI64Factory) _GetContextById(id uint32) *SimpleStrI64Context {
+	ctx, ok := self.contextById[id]
 
 	if !ok {
-		pid, ok := d.pageIdByContextId[id]
+		pid, ok := self.pageIdByContextId[id]
 		if !ok {
 			fmt.Printf("[ERROR] no contextId=%v pid=%v\n", id, pid)
 			os.Exit(1)
-		}
+		}		
 		
-		d.rwlock.Lock()
-		defer d.rwlock.Unlock()
-		data, err := d.pager.ReadPayloadData(pid)
-		if err != nil {
-			fmt.Println("error", err)
-			os.Exit(1)
-		}
-
-		
-		rd := NewDataStreamFromBuffer(data)
-
-		ctxType := rd.ReadUInt8()
-		depth := rd.ReadUInt8()
-
-		ctx = d._NewContext(id, pid, ctxType, depth)	
-
-		var rowsCount int
-		rowsCount = int(rd.ReadUInt16())
-
-		//fmt.Println("_GetContext", ctx.ToString(), "rowsCount", rowsCount)
-
-		switch ctx.ctxType {
-		case LAZYSTRI64_DATA:
-
-			for i:=0; i<rowsCount; i++ {
-				k := rd.ReadHStr()
-				v := int64(rd.ReadUInt64())
-				ctx.valueByKey[k] = v
-			}
-
-		case LAZYSTRI64_BRANCH:
-
-			for i:=0; i<rowsCount; i++ {
-				k := int32(rd.ReadUInt32())
-				v := rd.ReadUInt32()
-				ctx.childContextIdByBranchKey[k] = v
-			}
-		}
-
-		d.contextById[id] = ctx
-			
-		
+		ctx = self._LoadContext(id, pid)
+		self.contextById[id] = ctx
 	}
 
 	return ctx
@@ -469,8 +483,11 @@ func NewStrI64Dict(s *Storage, dbName string, dictName string) *LazyStrI64Dict {
 	return dict
 }
 
+func (self *LazyStrI64Dict) ReleaseCache() {
+	self.stri64Factory.ReleaseCache()
+}
 
-func (self *LazyStrI64Dict) Save() {
+func (self *LazyStrI64Dict) Save(commit bool) {
 
 
 	db := self._GetDB()
@@ -486,7 +503,9 @@ func (self *LazyStrI64Dict) Save() {
 
 	db.SetMeta(self.dictName, metaW.ToBytes())
 
-	self.storage.Save()
+	if commit {
+		self.storage.Save()
+	}
 	 
 }
 

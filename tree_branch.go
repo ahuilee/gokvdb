@@ -16,7 +16,7 @@ type BranchI64BTreeFactory struct {
 	pager IPager
 	rootPageId uint32
 	treePageByPageId map[uint32]*BranchI64BTreePage
-
+	depth int
 }
 
 type BranchI64BTreePage struct {
@@ -34,14 +34,25 @@ func (self *BranchI64BTreePage) ToString() string {
 	return fmt.Sprintf("<BranchI64BTreePage pid=%v isChanged=%v>", self.pid, self.isChanged)
 }
 
-func (self *BranchI64BTreeFactory) CalcBranchKeys(value int64) []int64 {
-	//k3 := value / 8192
-	k2 := value / 4096
-	k1 := k2 / 4096
-	//keys := []int64{k1, k2, k3}
-	keys := []int64{k1, k2}
+func (self *BranchI64BTreeFactory) CalcBranchKeys(key int64) []int64 {
 
-	return keys
+	var keys []int64
+
+	curKey := key
+
+	for i:=0; i<self.depth; i++ {
+		curKey = curKey / 4096
+		keys = append(keys, curKey)
+	}
+
+	var reverseKeys []int64
+	for i:=len(keys)-1; i>=0; i-- {
+		reverseKeys = append(reverseKeys, keys[i])
+	}
+
+	//fmt.Println("CalcBranchKeys", reverseKeys)
+
+	return reverseKeys
 }
 
 func (self *BranchI64BTreeFactory) NewTreePage(pid uint32, data []byte) *BranchI64BTreePage {
@@ -53,10 +64,11 @@ func (self *BranchI64BTreeFactory) NewTreePage(pid uint32, data []byte) *BranchI
 	return treePage
 }
 
-func NewBranchI64BTreeFactory(pager IPager, meta []byte) *BranchI64BTreeFactory {
+func NewBranchI64BTreeFactory(pager IPager, meta []byte, depth int) *BranchI64BTreeFactory {
 	self := new(BranchI64BTreeFactory)
 	self.pager = pager
 	self.treePageByPageId = make(map[uint32]*BranchI64BTreePage)
+	self.depth = depth
 
 	rootPageId := uint32(0)	
 
@@ -101,7 +113,7 @@ func (self *BranchI64BTreeFactory) LoadTreePage(pid uint32) *BranchI64BTreePage 
 func (self *BranchI64BTreeFactory) _EachItems(page *BranchI64BTreePage, outCh chan I64I64BTreeItem, depth int) {
 	//fmt.Println("BEGIN _EachContexts depth", depth, page.ToString())
 
-	if depth >= 2 {
+	if depth >= self.depth {
 		for item := range page.tree.Items() {
 			outCh <- item
 		}

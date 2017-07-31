@@ -32,7 +32,25 @@ func (self *LazyI64I64SetContext) ToString() string {
 	return fmt.Sprintf("<LazyI64I64SetContext key=%v pid=%v>", self.key, self.pid)
 }
 
-func (self *LazyI64I64SetDict) Save() {
+func (self *LazyI64I64SetDict) ReleaseCache() {
+
+	var keys []int64
+
+	for key, ctx := range self.ctxByKey {
+		if !ctx.isChanged {
+			keys = append(keys, key)
+		}
+	}
+
+	for _, key := range keys {
+		ctx, _ := self.ctxByKey[key]
+		fmt.Println("ReleaseCache", ctx.ToString())
+		delete(self.ctxByKey, key)
+		ctx = nil		
+	}
+}
+
+func (self *LazyI64I64SetDict) Save(commit bool) {
 
 	for _, ctx := range self.ctxByKey {
 		if ctx.isChanged {
@@ -60,7 +78,10 @@ func (self *LazyI64I64SetDict) Save() {
 	metaBytes := metaW.ToBytes()
 
 	db.SetMeta(self.ixName, metaBytes)
-	self.storage.Save()
+
+	if commit {
+		self.storage.Save()
+	}
 
 }
 
@@ -93,7 +114,7 @@ func NewLazyI64I64SetDict(storage *Storage, dbName string, ixName string) *LazyI
 	internalPager := NewInternalPager(storage.pager, internalPageSize, internalPagerMeta)
 
 	self.internalPager = internalPager
-	self.treeFactory = NewBranchI64BTreeFactory(internalPager, treeFactoryMeta)
+	self.treeFactory = NewBranchI64BTreeFactory(internalPager, treeFactoryMeta, 3)
 	return self
 }
 
@@ -170,6 +191,8 @@ func (self *LazyI64I64SetDict) Get(key int64) (LazyI64I64SetItem, bool) {
 
 	return LazyI64I64SetItem{}, false
 }
+
+
 
 func (self *LazyI64I64SetDict) Add(key int64, value int64) {
 	var ctx *LazyI64I64SetContext

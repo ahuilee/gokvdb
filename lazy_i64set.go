@@ -52,7 +52,7 @@ func (self *LazyI64Set) Save() []byte {
 			ctx.isChanged = false
 
 			ctxW := NewDataStream()
-			ctxW.WriteUInt16(uint16(len(ctx.data)))
+			ctxW.WriteUInt24(uint32(len(ctx.data)))
 			for v, _ := range ctx.data {
 				ctxW.WriteUInt64(uint64(v))
 			}
@@ -126,7 +126,7 @@ func (self *LazyI64Set) Add(value int64) {
 		ctxPageId = self.pager.CreatePageId()
 		page.Set(branchKey, int64(ctxPageId))
 	
-		ctx := self.NewContext(ctxPageId, branchKey)
+		ctx = self.NewContext(ctxPageId, branchKey)
 		ctx.isChanged = true
 		self.contextByPageId[ctxPageId] = ctx
 	}
@@ -147,16 +147,14 @@ func (self *LazyI64Set) Add(value int64) {
 }
 
 
-
-
 func (self *LazyI64Set) LoadContext(pid uint32, branchKey int64, data []byte) *LazyI64SetContext {
 	ctx := self.NewContext(pid, branchKey)
 
 	rd := NewDataStreamFromBuffer(data)
-	rowsCount := rd.ReadUInt16()
+	rowsCount := int(rd.ReadUInt24())
 	//fmt.Println("LoadContext rowsCount", rowsCount)
-	var i uint16
-	for i=0; i<rowsCount; i++ {
+	
+	for i:=0; i<rowsCount; i++ {
 		v := int64(rd.ReadUInt64())
 		ctx.data[v] = 1
 	}
@@ -170,6 +168,10 @@ func (self *LazyI64Set) NewContext(pid uint32, branchKey int64) *LazyI64SetConte
 	ctx.branchKey = branchKey
 	ctx.data = make(map[int64]byte)
 	return ctx
+}
+
+func (self *LazyI64Set) ReleaseCache() {
+
 }
 
 
@@ -186,7 +188,7 @@ func NewLazyI64Set(pager IPager, meta []byte) *LazyI64Set {
 		treeFactoryMeta = rd.ReadChunk()
 	}
 	
-	self.treeFactory = NewBranchI64BTreeFactory(pager, treeFactoryMeta)
+	self.treeFactory = NewBranchI64BTreeFactory(pager, treeFactoryMeta, 3)
 
 	return self
 }

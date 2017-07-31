@@ -134,7 +134,7 @@ func (self *I64I64BTreePage) Get(key int64) (int64, bool) {
 
 		nodeKey := node.GetKey()
 
-		if loopCount > 16 {
+		if loopCount > 24 {
 			fmt.Println("too many loop", loopCount, self.ToString())
 		}
 
