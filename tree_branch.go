@@ -7,11 +7,6 @@ import (
 	//"sync"
 )
 
-/*
-type _RWLock struct {
-	lock sync.Mutex
-}*/
-
 type BranchI64BTreeFactory struct {
 	pager IPager
 	rootPageId uint32
@@ -45,11 +40,13 @@ func (self *BranchI64BTreeFactory) CalcBranchKeys(key int64) []int64 {
 		keys = append(keys, curKey)
 	}
 
-	var reverseKeys []int64
-	for i:=len(keys)-1; i>=0; i-- {
-		reverseKeys = append(reverseKeys, keys[i])
+	keysCount := len(keys)
+	reverseKeys := make([]int64, keysCount)
+	for i:=0; i<keysCount; i++ {
+		reverseKeys[i] = keys[keysCount-i-1]
 	}
 
+	keys = nil
 	//fmt.Println("CalcBranchKeys", reverseKeys)
 
 	return reverseKeys
@@ -74,7 +71,6 @@ func NewBranchI64BTreeFactory(pager IPager, meta []byte, depth int) *BranchI64BT
 
 	if meta != nil {
 		rd := NewDataStreamFromBuffer(meta)
-
 		rootPageId = rd.ReadUInt32()
 	}
 
@@ -115,6 +111,8 @@ func (self *BranchI64BTreeFactory) _EachItems(page *BranchI64BTreePage, outCh ch
 
 	if depth >= self.depth {
 		for item := range page.tree.Items() {
+			//fmt.Println("_EachItems Last depth", depth, page.ToString(), item.Key(), item.Value())
+
 			outCh <- item
 		}
 

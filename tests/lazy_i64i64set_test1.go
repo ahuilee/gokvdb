@@ -6,6 +6,7 @@ import (
 	//"bytes"
 	"time"
 	"math/rand"
+	"sort"
 	//"github.com/satori/go.uuid"
 	"../../gokvdb"
 	"../testutils"
@@ -41,7 +42,11 @@ func main() {
 } 
 
 var testCounter = 0
+type I64Array []int64
 
+func (self I64Array) Len() int { return len(self) }
+func (self I64Array) Swap(i, j int) { self[i], self[j] = self[j], self[i] }
+func (self I64Array) Less(i, j int) bool { return self[i] < self[j] }
 
 
 func testInsert(dbPath string, dbName string, dictName string) {
@@ -49,62 +54,80 @@ func testInsert(dbPath string, dbName string, dictName string) {
 	testCounter += 1
 
 
+	checkMap := make(map[int64]map[int64]byte)
+
+
 	for i:= 0; i<128; i++ {
 
-		var keys []int64
 
-		for j:= 0; j<128; j++ {
+		key := rand.Int63n(12345678)
+
+		checkData := make(map[int64]byte)
+		checkMap[key] = checkData
+
+		counter := 0
+
+
+		for j:= 0; j<32; j++ {
 		
 			testutils.OpenStorage(dbPath, func(s *gokvdb.Storage) {
 
-				i64i64set := gokvdb.NewLazyI64I64SetDict(s, dbName, dictName)
-
-				key := rand.Int63n(12345678)
-
-				keys = append(keys, key)
+				i64i64set := gokvdb.NewLazyI64I64SetDict(s, dbName, dictName)				
 
 				vals := testutils.RandI64Array(100)
-				for _i, v := range vals {
+				
+				for _, v := range vals {
+					//for i:=0; i<16384; i++{
+					counter += 1
 					i64i64set.Add(key, v)
-					fmt.Printf("%04d Add j=%04d i=%06d key=%v val=%v\n", testCounter, j, _i, key, v)
+					fmt.Printf("%04d Add count=%06d key=%v val=%v\n", testCounter, counter, key, v)
+
+					checkData[v] = 0
 				}
 
-				i64i64set.Save()
+				i64i64set.Save(true)
 
 			})
 		}
 
+	}
 
-		testutils.OpenStorage(dbPath, func(s *gokvdb.Storage) {
 
-			i64i64set := gokvdb.NewLazyI64I64SetDict(s, dbName, dictName)
-
-			count := 0
-
-			for item := range i64i64set.Items() {
-				key := item.Key()
-				for val := range item.Values() {
-					count += 1
-					fmt.Printf("%04d Items i=%04d %07d key=%v val=%v\n", testCounter, i, count, key, val)
-				}
-			}
-
-			for _, key := range keys {
+	testutils.OpenStorage(dbPath, func(s *gokvdb.Storage) {
+		i64i64set := gokvdb.NewLazyI64I64SetDict(s, dbName, dictName)
+		for key, checkData := range checkMap {
 				item, ok := i64i64set.Get(key)
-
-
 				if !ok {
-					fmt.Printf("%04d Get Error! key=%vv\n", testCounter, key)
+					fmt.Println("No key", key)
+
 					os.Exit(1)
 				}
-				isValid := key == item.Key()
-				fmt.Printf("%04d Get key=%v isValid=%v rows=%v\n", testCounter, key, isValid, len(item.Values()))
 
-			}
+				var vals I64Array
+				for v, _ := range checkData {
+					vals = append(vals, v)
+				}
 
-		})
+				
 
-	}
+				sort.Sort(vals)
+				i:= 0
+
+				for setVal := range item.Values() {
+					val := vals[i]
+					isValid := val == setVal
+
+					fmt.Printf("%04d Get key=%v setVal=%v val=%v isValid=%v\n", testCounter, key, setVal, val, isValid)
+					if !isValid {
+						os.Exit(1)
+					}
+
+					i += 1
+
+				}
+				
+		}
+	})
 
 
 	

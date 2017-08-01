@@ -37,6 +37,7 @@ var testCounter = 0
 
 
 
+
 func TestSet(dbPath string, pageSize int) {
 
 	testCounter += 1
@@ -54,26 +55,30 @@ func TestSet(dbPath string, pageSize int) {
 
 			pid = pager.CreatePageId()
 	})
+
+	insertCounter := 0
 	
 	
 
-	for j:=0; j<32; j++ {
+	for j:=0; j<128; j++ {
 
 		testutils.OpenInternalPager(dbPath, pageSize, metaOffset, "w", func(pager gokvdb.IPager) {
 
 			_meta, _ := pager.ReadPayloadData(pid)
 			set := gokvdb.NewLazyI64Set(pager, _meta)
 
-			randVals := testutils.RandI64Array(16384)
+			randVals := testutils.RandI64Array(rand.Intn(1000) + 100)
 
-			for i, v := range randVals {
+			for _, v := range randVals {
 				valSet[v] = 1
+
+				insertCounter += 1
 
 				if v < startVal {
 					startVal = v
 				}
 				
-				fmt.Printf("%04d i64Set i=%v add=%v\n", testCounter, i, v)
+				fmt.Printf("%04d i64SetinsertCounter=%v add=%v\n", testCounter, insertCounter, v)
 				set.Add(v)
 			}
 

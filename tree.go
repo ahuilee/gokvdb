@@ -222,7 +222,7 @@ func (self *I64I64BTreePage) ToBytes() []byte {
 	w.WriteUInt32(uint32(self.lastNodeId))
 	w.WriteUInt32(uint32(self.rootNodeId))
 
-	w.WriteUInt16(uint16(len(self.nodeById)))
+	w.WriteUInt32(uint32(len(self.nodeById)))
 	for _, node := range self.nodeById {
 		w.WriteUInt32(uint32(node.id))
 		w.WriteUInt32(uint32(node.leftNodeId))
@@ -247,9 +247,9 @@ func NewI64I64BTreePage(data []byte) *I64I64BTreePage {
 		rd := NewDataStreamFromBuffer(data)
 		lastNodeId = rd.ReadUInt32()
 		rootNodeId = rd.ReadUInt32()
-		nodeCount := rd.ReadUInt16()
+		nodeCount := rd.ReadUInt32()
 
-		var i uint16
+		var i uint32
 
 		var nodeId uint32
 		var leftNodeId uint32
@@ -273,6 +273,8 @@ func NewI64I64BTreePage(data []byte) *I64I64BTreePage {
 			//fmt.Println("LOAD", node)
 		}
 	}
+
+	fmt.Println("NewI64I64BTreePage nodes", len(tree.nodeById))
 
 	tree.lastNodeId = lastNodeId
 	tree.rootNodeId = rootNodeId
@@ -338,6 +340,10 @@ func (self *I64I64BTreePageNode) ToString() string {
 
 /* BTree */
 
+
+
+
+
 func TakeII64I64BTreeNodes(tree II64I64BTree) chan II64I64BTreeNode {
 
 	q := make(chan II64I64BTreeNode)
@@ -346,7 +352,7 @@ func TakeII64I64BTreeNodes(tree II64I64BTree) chan II64I64BTreeNode {
 		rootNode := tree.GetRootNode()
 		node := rootNode
 		goLeft := true
-		var stack []II64I64BTreeNode
+		stack := NewLazyList()
 
 		for {
 			if node == nil {
@@ -355,7 +361,8 @@ func TakeII64I64BTreeNodes(tree II64I64BTree) chan II64I64BTreeNode {
 			leftNode := node.GetLeftNode()
 			rightNode := node.GetRightNode()
 			if goLeft && leftNode != nil {
-				stack = append(stack, node)
+				stack.Append(node)
+				
 				node = leftNode
 			} else {
 				chOutNodes <- node
@@ -364,12 +371,11 @@ func TakeII64I64BTreeNodes(tree II64I64BTree) chan II64I64BTreeNode {
 					goLeft = true
 
 				} else {
-					if len(stack) == 0 {
+					if stack.Len() == 0 {
 						break
 					}
 
-					node = stack[len(stack)-1]
-					stack = stack[:len(stack)-1]
+					node = stack.Pop().(II64I64BTreeNode)
 					goLeft = false
 				}
 
@@ -552,7 +558,7 @@ func NewBTreeBlobMap(pager IPager, meta []byte) *BTreeBlobMap {
 		_CheckErr("LOAD BTREE NODES Context", err)
 		
 		nodesR := NewDataStreamFromBuffer(nodesData)
-		nodesCount := nodesR.ReadUInt24()
+		nodesCount := nodesR.ReadUInt32()
 		var i uint32
 		var nodeId uint32
 		var nodeKey int64
@@ -636,7 +642,7 @@ func (bt *BTreeBlobMap) Save() []byte {
 
 	nodesW := NewDataStream()
 
-	nodesW.WriteUInt24(uint32(len(bt.nodes)))
+	nodesW.WriteUInt32(uint32(len(bt.nodes)))
 
 	for _, node := range bt.nodes {
 		nodesW.WriteUInt32(node.id)
@@ -655,7 +661,7 @@ func (bt *BTreeBlobMap) Save() []byte {
 			//fmt.Println(bt.ToString(), "[SAVE DATA Context]", "dataPid=", dataPid, "rows=", len(dataContext.pageIdByKey))
 
 			w := NewDataStream()
-			w.WriteUInt24(uint32(len(dataContext.pageIdByKey)))
+			w.WriteUInt32(uint32(len(dataContext.pageIdByKey)))
 			for key, pid := range dataContext.pageIdByKey {
 				w.WriteUInt64(uint64(key))
 				w.WriteUInt32(pid)
@@ -1043,7 +1049,7 @@ func (bt* BTreeBlobMap) _GetNodeDataContext(pid uint32) *BTreeBlobMapNodeContext
 		if err == nil {
 
 			rd := NewDataStreamFromBuffer(data)
-			rowCount := int(rd.ReadUInt24())
+			rowCount := int(rd.ReadUInt32())
 			for i:=0; i<rowCount; i++ {
 				rowKey := int64(rd.ReadUInt64())
 				rowPid := rd.ReadUInt32()

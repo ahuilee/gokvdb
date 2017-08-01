@@ -78,7 +78,6 @@ func (self *LazyI64Set) Values() chan int64 {
 
 	go func(ch chan int64) {
 
-
 		for item := range self.treeFactory.Items() {
 
 			pageId := uint32(item.Value())
@@ -87,12 +86,10 @@ func (self *LazyI64Set) Values() chan int64 {
 
 				branchKey := item.Key()
 				
-				ctxData, _ := self.pager.ReadPayloadData(pageId)
-				//fmt.Println("_EachContexts LoadContext", ctxData)
-				ctx = self.LoadContext(pageId, branchKey, ctxData)
+				ctx = self.LoadContext(pageId, branchKey)
 			}
 
-			var vals I64Array//[]int64
+			var vals I64Array
 			for k, _ := range ctx.data {
 				vals = append(vals, k)
 			}
@@ -109,8 +106,8 @@ func (self *LazyI64Set) Values() chan int64 {
 	return q
 }
 
+
 func (self *LazyI64Set) Add(value int64) {
-	var pageId uint32
 
 	branchKey := value / 4096
 
@@ -134,8 +131,7 @@ func (self *LazyI64Set) Add(value int64) {
 	if ctx == nil {
 		ctx, ok = self.contextByPageId[ctxPageId]
 		if !ok {
-			ctxData, _ := self.pager.ReadPayloadData(pageId)
-			ctx = self.LoadContext(ctxPageId, branchKey, ctxData)
+			ctx = self.LoadContext(ctxPageId, branchKey)
 			self.contextByPageId[ctxPageId] = ctx
 		}
 	}
@@ -147,8 +143,10 @@ func (self *LazyI64Set) Add(value int64) {
 }
 
 
-func (self *LazyI64Set) LoadContext(pid uint32, branchKey int64, data []byte) *LazyI64SetContext {
+func (self *LazyI64Set) LoadContext(pid uint32, branchKey int64) *LazyI64SetContext {
 	ctx := self.NewContext(pid, branchKey)
+
+	data, _ := self.pager.ReadPayloadData(pid)
 
 	rd := NewDataStreamFromBuffer(data)
 	rowsCount := int(rd.ReadUInt24())
@@ -188,7 +186,7 @@ func NewLazyI64Set(pager IPager, meta []byte) *LazyI64Set {
 		treeFactoryMeta = rd.ReadChunk()
 	}
 	
-	self.treeFactory = NewBranchI64BTreeFactory(pager, treeFactoryMeta, 3)
+	self.treeFactory = NewBranchI64BTreeFactory(pager, treeFactoryMeta, 2)
 
 	return self
 }
